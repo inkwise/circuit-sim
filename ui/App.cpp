@@ -1557,6 +1557,16 @@ int App::bestResultTab() const
     return hasTimeVaryingSource() ? 2 : 1;
 }
 
+bool App::loopsLivePlayback() const
+{
+    for (const auto& component : circuit_.components) {
+        if (isSourceType(component.type) && component.source.mode != Waveform::DC) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool App::hasTimeVaryingSource() const
 {
     for (const auto& component : circuit_.components) {
@@ -1703,6 +1713,12 @@ void App::pollSimulation()
     result_ = std::move(incoming);
     hasResult_ = true;
     resultRevision_ = result_.revision;
+    if (!loopsLivePlayback()) {
+        // A one-off transient plays from the start every time a fresh result
+        // arrives, so changing a parameter replays the whole cooldown instead
+        // of leaving the readout pinned at its old end state.
+        liveClock_ = 0.0;
+    }
     refreshProbeCache();
     updateFlowSmoothing();
 
@@ -1759,10 +1775,16 @@ size_t App::liveSampleIndex() const
         return 0;
     }
     // Play the whole transient window over a few seconds, otherwise a 1 kHz
-    // waveform would flicker far too fast to observe.
+    // waveform would flicker far too fast to observe. Periodic circuits repeat
+    // the window; a one-off transient (a Peltier plate cooling down, an RC
+    // charging) plays once and then holds its final state instead of snapping
+    // back to the start.
     const double playbackSeconds = 3.0;
+    const double elapsed = std::max(0.0, liveClock_);
     const double phase =
-        std::fmod(std::max(0.0, liveClock_), playbackSeconds) / playbackSeconds;
+        loopsLivePlayback()
+            ? std::fmod(elapsed, playbackSeconds) / playbackSeconds
+            : std::clamp(elapsed / playbackSeconds, 0.0, 1.0);
     double time = first + phase * span;
     const auto found = std::lower_bound(result_.time.begin(), result_.time.end(), time);
     size_t index = static_cast<size_t>(found - result_.time.begin());

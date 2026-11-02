@@ -198,6 +198,12 @@ private:
 
     // Simulation
     bool hasTimeVaryingSource() const;
+    // True when the live playback should repeat the transient window. A circuit
+    // driven by a periodic source loops (a waveform on repeat is the point); a
+    // one-off process such as a Peltier plate cooling down plays once and then
+    // holds its final state, so the temperature never jumps back to where it
+    // started.
+    bool loopsLivePlayback() const;
     // Result tab that answers "did it work?" for the current circuit:
     // 3 = 示波 when a probe exists, 2 = 波形 for other transients, 1 = 电压.
     int bestResultTab() const;
