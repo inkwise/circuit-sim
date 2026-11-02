@@ -471,7 +471,11 @@ void App::drawScopePlot(const ImVec2& size, const std::vector<const Component*>&
 
     const float left = dp(62.0f);
     const float right = dp(16.0f);
-    const float top = dp(12.0f);
+    // The readout lives in its own strip above the axes, otherwise it covers the
+    // top of the waveform, which on a rail-level trace is exactly where the
+    // curve runs.
+    const float readoutHeight = ImGui::GetFontSize() + dp(10.0f);
+    const float top = dp(6.0f) + readoutHeight + dp(6.0f);
     const float bottom = dp(28.0f);
     const ImVec2 p0(origin.x + left, origin.y + top);
     const ImVec2 p1(end.x - right, end.y - bottom);
@@ -648,24 +652,36 @@ void App::drawScopePlot(const ImVec2& size, const std::vector<const Component*>&
         }
     }
 
-    // Compact readout in the corner: the numbers the user came for.
+    // Readout strip above the axes: the numbers the user came for, kept out of
+    // the plotting area. Fields are dropped when the window is too narrow.
     if (traces.front().stats.ok) {
         const WaveStats& stats = traces.front().stats;
-        char text[192];
-        std::snprintf(text, sizeof(text),
-                      "%s  平均 %s   峰峰 %s   有效值 %s   %s", traces.front().probe->name.c_str(),
-                      formatSI(stats.mean, "V").c_str(), formatSI(stats.ripple, "V").c_str(),
-                      formatSI(stats.rms, "V").c_str(),
-                      stats.frequency > 0.0 ? formatSI(stats.frequency, "Hz").c_str()
-                                            : "非周期");
-        const ImVec2 textSize = ImGui::CalcTextSize(text);
-        const ImVec2 boxMin(p0.x + dp(6.0f), p0.y + dp(4.0f));
-        drawList->AddRectFilled(boxMin,
-                                ImVec2(boxMin.x + textSize.x + dp(14.0f),
-                                       boxMin.y + textSize.y + dp(8.0f)),
-                                IM_COL32(29, 37, 49, 215), dp(5.0f));
-        drawList->AddText(ImVec2(boxMin.x + dp(7.0f), boxMin.y + dp(4.0f)), Theme::textDim(),
-                          text);
+        std::vector<std::string> parts;
+        parts.push_back(traces.front().probe->name);
+        parts.push_back("平均 " + formatSI(stats.mean, "V"));
+        parts.push_back("峰峰 " + formatSI(stats.ripple, "V"));
+        parts.push_back("有效值 " + formatSI(stats.rms, "V"));
+        parts.push_back(stats.frequency > 0.0 ? formatSI(stats.frequency, "Hz") : "非周期");
+
+        const float available = p1.x - p0.x;
+        std::string text = parts.front();
+        for (size_t i = 1; i < parts.size(); ++i) {
+            const std::string candidate = text + "   " + parts[i];
+            if (ImGui::CalcTextSize(candidate.c_str()).x > available) {
+                break;
+            }
+            text = candidate;
+        }
+        const ImVec2 textSize = ImGui::CalcTextSize(text.c_str());
+        const float boxHeight = textSize.y + dp(6.0f);
+        const ImVec2 boxMin(p0.x, origin.y + dp(4.0f));
+        const ImVec2 boxMax(std::min(boxMin.x + textSize.x + dp(14.0f), p1.x),
+                            boxMin.y + boxHeight);
+        drawList->AddRectFilled(boxMin, boxMax, IM_COL32(29, 37, 49, 215), dp(5.0f));
+        drawList->PushClipRect(boxMin, boxMax, true);
+        drawList->AddText(ImVec2(boxMin.x + dp(7.0f), boxMin.y + dp(3.0f)),
+                          Theme::textDim(), text.c_str());
+        drawList->PopClipRect();
     }
 
     drawList->AddRect(p0, p1, Theme::axis(), dp(4.0f), 0, 1.0f);
