@@ -10,6 +10,7 @@
 #include "circuit/Netlist.h"
 #include "circuit/ProjectIO.h"
 #include "circuit/Simulation.h"
+#include "circuit/Thermoelectric.h"
 
 #include <algorithm>
 #include <cctype>
@@ -2094,6 +2095,349 @@ void testEngineeringInput()
           "SI prefix letters match the formatted values");
 }
 
+
+// A Peltier module is an electro-thermal load: the current has to fall as the
+// cold face gets cold, the plate has to start at its initial temperature and
+// settle on the steady state the analytic model predicts, and the hot face
+// stays pinned to the heat sink temperature.
+Circuit makeThermoelectricTestCircuit(ComponentType type, double supply,
+                                      double heatLoad)
+{
+    Circuit circuit;
+    const int source = circuit.addComponent(ComponentType::VoltageSource, 10, 11);
+    if (Component* component = circuit.findComponent(source)) {
+        component->source.mode = Waveform::DC;
+        component->source.dc = supply;
+        component->source.amplitude = supply;
+        component->value = supply;
+    }
+    const int cooler = circuit.addComponent(type, 20, 11);
+    if (Component* component = circuit.findComponent(cooler)) {
+        component->heatLoad = heatLoad;
+        component->coldStart = 20.0;
+        applyLoadDefaults(*component);
+    }
+    circuit.addComponent(ComponentType::Ground, 10, 18);
+    circuit.addWirePoints({Point{10, 9}, Point{20, 9}});
+    circuit.addWirePoints({Point{20, 13}, Point{20, 17}, Point{10, 17}});
+    circuit.addWirePoints({Point{10, 13}, Point{10, 17}});
+    return circuit;
+}
+
+int coolerIdOf(const Circuit& circuit, ComponentType type)
+{
+    for (const auto& component : circuit.components) {
+        if (component.type == type) {
+            return component.id;
+        }
+    }
+    return -1;
+}
+
+void testThermoelectricModel()
+{
+    const ThermoelectricSpec* spec = thermoelectricSpec(ComponentType::Tec12706);
+    check(spec != nullptr, "the 12706 datasheet parameters exist");
+    if (!spec) {
+        return;
+    }
+
+    // The three classic Peltier relations have to reproduce the datasheet.
+    const double hotKelvin = 27.0 + 273.15;
+    const double qmax = spec->seebeck * spec->maxCurrent * hotKelvin -
+                        0.5 * spec->resistance * spec->maxCurrent * spec->maxCurrent;
+    std::printf("12706 Qmax from the model = %.1f W (datasheet %.1f W)\n", qmax,
+                spec->maxPumping);
+    check(std::fabs(qmax - spec->maxPumping) < 4.0,
+          "the model reproduces the datasheet Qmax");
+    const double vmax = spec->seebeck * spec->maxDeltaT +
+                        spec->maxCurrent * spec->resistance;
+    std::printf("12706 Vmax from the model = %.1f V (datasheet %.1f V)\n", vmax,
+                spec->maxVoltage);
+    check(std::fabs(vmax - spec->maxVoltage) < 1.0,
+          "the model reproduces the datasheet Vmax");
+
+    // A 12710 pumps about 1.6x the heat of a 12706 at the same voltage.
+    const ThermoelectricSpec* bigger = thermoelectricSpec(ComponentType::Tec12710);
+    check(bigger != nullptr, "the 12710 datasheet parameters exist");
+    if (bigger) {
+        check(bigger->maxCurrent > spec->maxCurrent && bigger->resistance < spec->resistance,
+              "the 12710 is the higher-current, lower-resistance part");
+    }
+
+    ThermoelectricPoint analytic;
+    check(solveThermoelectric(*spec, 12.0, 20.0, 0.0, &analytic),
+          "the analytic steady state of a 12 V 12706 solves");
+    std::printf("analytic 12706 @12 V: I = %.3f A, Tc = %.2f degC, dT = %.2f K\n",
+                analytic.current, analytic.coldTemperature, analytic.deltaT);
+    check(std::fabs(analytic.coldTemperature - (-42.73)) < 0.2,
+          "a 12 V 12706 pulls the cold face to about -42.7 degC");
+    check(std::fabs(analytic.current - 4.38) < 0.05,
+          "the steady current is about 4.4 A, not the 6.1 A of a cold plate");
+
+    NgspiceEngine engine;
+    std::string error;
+    check(engine.initialize(error), "ngspice initializes for the cooler: " + error);
+
+    const Circuit circuit = makeThermoelectricTestCircuit(ComponentType::Tec12706, 12.0, 0.0);
+    const int coolerId = coolerIdOf(circuit, ComponentType::Tec12706);
+    const CompiledCircuit compiled = compileCircuit(circuit);
+    check(compiled.ok, "the cooler circuit compiles: " + compiled.error);
+    check(compiled.thermalNodes.size() == 1, "the cooler owns a thermal node");
+    check(compiled.netlist.find("CL_TEC_TEC1") != std::string::npos,
+          "the netlist instantiates the Peltier model");
+    check(compiled.netlist.find(".ic v(") != std::string::npos,
+          "the netlist starts the plate at its initial temperature");
+    // The thermal node must not be advertised as an electrical node.
+    for (int node : compiled.nodeNumbers) {
+        check(node != compiled.nodes.at(coolerId).thermalNode,
+              "the thermal node stays out of the node list");
+    }
+
+    // Operating point = steady state.
+    SimulationRequest opRequest;
+    opRequest.circuit = circuit;
+    opRequest.kind = AnalysisKind::OperatingPoint;
+    opRequest.revision = 11;
+    SimulationResult op = engine.runAsync(std::move(opRequest)).get();
+    if (!op.ok) {
+        std::printf("---- ngspice log ----\n%s\n--------------------\n", op.log.c_str());
+    }
+    check(op.ok, "the cooler operating point runs");
+    const auto cold = op.coldTemperature.find(coolerId);
+    check(cold != op.coldTemperature.end() && !cold->second.empty(),
+          "the operating point reports the cold face temperature");
+    if (cold != op.coldTemperature.end() && !cold->second.empty()) {
+        std::printf("simulated cold face = %.2f degC\n", cold->second.front());
+        check(std::fabs(cold->second.front() - analytic.coldTemperature) < 0.5,
+              "the simulated steady state matches the analytic one");
+    }
+    const auto pins = op.pinCurrent.find(coolerId);
+    check(pins != op.pinCurrent.end() && !pins->second.empty() &&
+              !pins->second[0].empty(),
+          "the cooler reports its branch current");
+    if (pins != op.pinCurrent.end() && !pins->second.empty() && !pins->second[0].empty()) {
+        std::printf("simulated current = %.3f A\n", pins->second[0].front());
+        check(std::fabs(pins->second[0].front() - analytic.current) < 0.05,
+              "the simulated current matches the analytic one");
+    }
+
+    // Transient = the plate cooling down from ambient, current falling with it.
+    SimulationRequest tranRequest;
+    tranRequest.circuit = circuit;
+    tranRequest.kind = AnalysisKind::Transient;
+    tranRequest.transient.step = 0.5e-3;
+    tranRequest.transient.stop = 50e-3;
+    tranRequest.revision = 12;
+    SimulationResult tran = engine.runAsync(std::move(tranRequest)).get();
+    check(tran.ok, "the cooler transient runs");
+    const auto curve = tran.coldTemperature.find(coolerId);
+    check(curve != tran.coldTemperature.end() && curve->second.size() > 5,
+          "the transient reports a temperature curve");
+    if (curve != tran.coldTemperature.end() && curve->second.size() > 5) {
+        std::printf("cold face: start %.2f degC, end %.2f degC, %zu samples\n",
+                    curve->second.front(), curve->second.back(), curve->second.size());
+        check(std::fabs(curve->second.front() - 20.0) < 0.5,
+              "the plate starts at its initial temperature");
+        check(curve->second.back() < -35.0, "the plate cools down inside the window");
+        check(std::fabs(curve->second.back() - analytic.coldTemperature) < 1.5,
+              "the cooled plate approaches the steady state");
+        bool monotonic = true;
+        for (size_t i = 1; i < curve->second.size(); ++i) {
+            if (curve->second[i] > curve->second[i - 1] + 0.01) {
+                monotonic = false;
+            }
+        }
+        check(monotonic, "the cold face never warms back up while cooling");
+    }
+    const auto tranPins = tran.pinCurrent.find(coolerId);
+    if (tranPins != tran.pinCurrent.end() && !tranPins->second.empty() &&
+        tranPins->second[0].size() > 5) {
+        const std::vector<double>& current = tranPins->second[0];
+        std::printf("cooler current: %.3f A -> %.3f A\n", current.front(), current.back());
+        check(current.front() > 5.5, "a plate at ambient draws the full V/R current");
+        check(current.back() < current.front() - 1.0,
+              "the current falls as the back-EMF builds up");
+    }
+
+    // A heat load on the cold face keeps it warmer, and more voltage is colder.
+    ThermoelectricPoint loaded;
+    check(solveThermoelectric(*spec, 12.0, 20.0, 8.0, &loaded),
+          "a cooler with a heat load still has a steady state");
+    std::printf("12 V with an 8 W load: Tc = %.2f degC\n", loaded.coldTemperature);
+    check(loaded.coldTemperature > analytic.coldTemperature + 2.0,
+          "an 8 W heat load warms the cold face");
+    ThermoelectricPoint weak;
+    check(solveThermoelectric(*spec, 5.0, 20.0, 0.0, &weak),
+          "5 V also has a steady state");
+    check(weak.coldTemperature > analytic.coldTemperature,
+          "less voltage means a warmer cold face");
+
+    // The bigger module pumps more heat at the same voltage.
+    if (bigger) {
+        ThermoelectricPoint big;
+        check(solveThermoelectric(*bigger, 12.0, 20.0, 8.0, &big),
+              "the 12710 has a steady state too");
+        std::printf("12710 @12 V with an 8 W load: I = %.2f A, Tc = %.2f degC\n",
+                    big.current, big.coldTemperature);
+        check(big.current > analytic.current, "the 12710 draws more current");
+    }
+
+    // Reversed supply: the same plate heats its "cold" face instead.
+    ThermoelectricPoint reversed;
+    check(solveThermoelectric(*spec, -5.0, 20.0, 0.0, &reversed),
+          "a reversed supply still solves");
+    check(reversed.coldTemperature > 20.0,
+          "reversed polarity heats the cold face instead of cooling it");
+
+    // A burned-out plate is an open circuit and must still simulate.
+    Circuit burned = makeThermoelectricTestCircuit(ComponentType::Tec12706, 12.0, 0.0);
+    for (auto& component : burned.components) {
+        if (component.type == ComponentType::Tec12706) {
+            component.damaged = true;
+        }
+    }
+    const CompiledCircuit burnedCompiled = compileCircuit(burned);
+    check(burnedCompiled.ok, "a damaged cooler still compiles: " + burnedCompiled.error);
+    check(burnedCompiled.netlist.find("RTEC1") != std::string::npos,
+          "a damaged cooler is emitted as an open resistor");
+    SimulationRequest burnedRequest;
+    burnedRequest.circuit = burned;
+    burnedRequest.kind = AnalysisKind::OperatingPoint;
+    SimulationResult burnedResult = engine.runAsync(std::move(burnedRequest)).get();
+    check(burnedResult.ok, "a damaged cooler still simulates");
+
+    // The example project is a complete, runnable circuit.
+    const Circuit demo = makeThermoelectricDemo();
+    const CompiledCircuit demoCompiled = compileCircuit(demo);
+    check(demoCompiled.ok, "the cooler example compiles: " + demoCompiled.error);
+    check(demoCompiled.netlist.find("CL_TEC_TEC") != std::string::npos,
+          "the example instantiates the Peltier model");
+}
+
+// Loads publish a nominal spec: rated voltage, current, power and the
+// equivalent resistance are linked, and editing one updates the rest.
+void testLoadSpec()
+{
+    Circuit circuit;
+    const int bulbId = circuit.addComponent(ComponentType::Bulb, 0, 0);
+    Component* bulb = circuit.findComponent(bulbId);
+    check(bulb != nullptr, "the lamp exists");
+    if (!bulb) {
+        return;
+    }
+    std::printf("lamp spec: %s / %s / %s, %s\n",
+                formatSI(bulb->ratedVoltage, "V").c_str(),
+                formatSI(loadRatedCurrent(*bulb), "A").c_str(),
+                formatSI(loadRatedPower(*bulb), "W").c_str(),
+                formatSI(bulb->value, "Ω").c_str());
+    check(std::fabs(bulb->ratedVoltage - 12.0) < 1e-9, "a lamp is a 12 V part");
+    check(std::fabs(loadRatedCurrent(*bulb) - 1.0) < 1e-9, "12 V / 12 Ω draws 1 A");
+    check(std::fabs(loadRatedPower(*bulb) - 12.0) < 1e-9, "12 V * 1 A is 12 W");
+
+    // Typing a new power re-derives the current and the resistance.
+    setLoadRatedPower(*bulb, 6.0);
+    check(std::fabs(bulb->value - 24.0) < 1e-9, "a 12 V 6 W lamp is 24 Ω");
+    check(std::fabs(loadRatedCurrent(*bulb) - 0.5) < 1e-9, "and draws 0.5 A");
+
+    // Typing a new current re-derives the power and the resistance.
+    setLoadRatedCurrent(*bulb, 2.0);
+    check(std::fabs(bulb->value - 6.0) < 1e-9, "a 12 V 2 A lamp is 6 Ω");
+    check(std::fabs(loadRatedPower(*bulb) - 24.0) < 1e-9, "and is a 24 W lamp");
+
+    // A new resistance keeps the rated voltage and follows through.
+    setLoadResistance(*bulb, 24.0);
+    check(std::fabs(loadRatedCurrent(*bulb) - 0.5) < 1e-9, "24 Ω at 12 V draws 0.5 A");
+    check(std::fabs(loadRatedPower(*bulb) - 6.0) < 1e-9, "which is a 6 W part");
+
+    // A new rated voltage keeps the resistance, so the spec rescales.
+    setLoadRatedVoltage(*bulb, 24.0);
+    check(std::fabs(bulb->value - 24.0) < 1e-9, "changing the rating keeps the filament");
+    check(std::fabs(loadRatedCurrent(*bulb) - 1.0) < 1e-9, "24 V across 24 Ω is 1 A");
+    check(std::fabs(loadRatedPower(*bulb) - 24.0) < 1e-9, "so it becomes a 24 W part");
+
+    // A Peltier module has a fixed datasheet spec that editing cannot break.
+    const int tecId = circuit.addComponent(ComponentType::Tec12706, 6, 0);
+    const Component* tec = circuit.findComponent(tecId);
+    check(tec != nullptr, "the cooler exists");
+    if (tec) {
+        check(std::fabs(tec->ratedVoltage - 12.0) < 1e-9, "a 12706 is a 12 V part");
+        check(std::fabs(loadRatedCurrent(*tec) - 6.0) < 1e-9, "and a 6 A part");
+        check(std::fabs(loadRatedPower(*tec) - 57.0) < 1e-9, "rated 57 W");
+        if (Component* editable = circuit.findComponent(tecId)) {
+            editable->ratedCurrent = 99.0;
+            applyLoadDefaults(*editable);
+            check(std::fabs(loadRatedCurrent(*editable) - 6.0) < 1e-9,
+                  "the datasheet spec is restored by the load defaults");
+        }
+    }
+}
+
+
+// The new load spec (rated current / power) and the Peltier state have to
+// survive a save/load cycle.
+void testThermoelectricProjectRoundTrip()
+{
+    const std::string directory = "./circuitlab_tec_projects";
+    std::string error;
+    check(ensureProjectDirectory(directory, &error), "cooler project dir");
+
+    Circuit circuit;
+    const int supply = circuit.addComponent(ComponentType::VoltageSource, 10, 11);
+    if (Component* component = circuit.findComponent(supply)) {
+        component->source.mode = Waveform::DC;
+        component->source.dc = 9.0;
+        component->source.amplitude = 9.0;
+        component->value = 9.0;
+    }
+    const int cooler = circuit.addComponent(ComponentType::Tec12710, 20, 11);
+    if (Component* component = circuit.findComponent(cooler)) {
+        component->heatLoad = 12.5;
+        component->coldStart = -5.0;
+    }
+    const int lamp = circuit.addComponent(ComponentType::Bulb, 24, 20);
+    if (Component* component = circuit.findComponent(lamp)) {
+        setLoadRatedPower(*component, 6.0);   // 12 V / 6 W -> 24 Ω
+    }
+    circuit.addComponent(ComponentType::Ground, 10, 18);
+    circuit.addWirePoints({Point{10, 9}, Point{20, 9}});
+    circuit.addWirePoints({Point{20, 13}, Point{20, 17}, Point{10, 17}});
+    circuit.addWirePoints({Point{10, 13}, Point{10, 17}});
+
+    const std::string path = directory + "/tec.ckt";
+    check(saveProject(circuit, path, "制冷片", &error), "cooler project saves");
+    Circuit loaded;
+    check(loadProject(path, &loaded, &error), "cooler project loads");
+    check(loaded.components.size() == circuit.components.size(),
+          "cooler project keeps its components");
+
+    bool coolerOk = false;
+    bool lampOk = false;
+    bool specOk = false;
+    for (const auto& component : loaded.components) {
+        if (component.type == ComponentType::Tec12710) {
+            coolerOk = std::fabs(component.heatLoad - 12.5) < 1e-9 &&
+                       std::fabs(component.coldStart + 5.0) < 1e-9;
+            specOk = std::fabs(loadRatedCurrent(component) - 10.5) < 1e-9 &&
+                     std::fabs(loadRatedPower(component) - 92.0) < 1e-9;
+        } else if (component.type == ComponentType::Bulb) {
+            lampOk = std::fabs(loadRatedPower(component) - 6.0) < 1e-6 &&
+                     std::fabs(component.value - 24.0) < 1e-6 &&
+                     std::fabs(loadRatedCurrent(component) - 0.5) < 1e-6;
+        }
+    }
+    check(coolerOk, "the cooler heat load and start temperature round-trip");
+    check(specOk, "the cooler datasheet spec round-trips");
+    check(lampOk, "a lamp rated by power round-trips with its resistance");
+
+    const CompiledCircuit recompiled = compileCircuit(loaded);
+    check(recompiled.ok, "the loaded cooler circuit still compiles: " + recompiled.error);
+    check(recompiled.netlist.find("+ 12.5") != std::string::npos,
+          "the loaded heat load reaches the Peltier model");
+    check(recompiled.netlist.find(".ic v(") != std::string::npos,
+          "the loaded start temperature reaches the model");
+}
+
 }  // namespace
 
 int main()
@@ -2134,6 +2478,9 @@ int main()
     testWireCrossings();
     testLoadRatings();
     testEngineeringInput();
+    testThermoelectricModel();
+    testLoadSpec();
+    testThermoelectricProjectRoundTrip();
 
     if (g_failures == 0) {
         std::printf("ALL TESTS PASSED\n");

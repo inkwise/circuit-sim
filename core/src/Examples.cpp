@@ -131,6 +131,31 @@ Circuit makeRcDemo()
 // chopper node feeds an L-C filter through a Schottky freewheel diode, and the
 // oscilloscope probe reads the result. Vout settles at roughly duty * 12 V with
 // a switching ripple of a few tens of millivolts.
+Circuit makeThermoelectricDemo()
+{
+    Circuit circuit;
+    const int supply = circuit.addComponent(ComponentType::VoltageSource, 10, 11);
+    if (Component* source = circuit.findComponent(supply)) {
+        source->source.mode = Waveform::DC;
+        source->source.dc = 12.0;
+        source->source.amplitude = 12.0;
+        source->value = 12.0;
+    }
+    const int cooler = circuit.addComponent(ComponentType::Tec12706, 20, 11);
+    if (Component* component = circuit.findComponent(cooler)) {
+        // A small load sitting on the cold face: 8 W leaking back in.
+        component->heatLoad = 8.0;
+        component->coldStart = 20.0;
+        applyLoadDefaults(*component);
+    }
+    circuit.addComponent(ComponentType::Ground, 10, 18);
+
+    circuit.addWirePoints({Point{10, 9}, Point{20, 9}});
+    circuit.addWirePoints({Point{20, 13}, Point{20, 17}, Point{10, 17}});
+    circuit.addWirePoints({Point{10, 13}, Point{10, 17}});
+    return circuit;
+}
+
 Circuit makeMosSwitchBoardDemo()
 {
     Circuit circuit;

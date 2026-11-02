@@ -2,6 +2,7 @@
 
 #include "circuit/ComponentCatalog.h"
 #include "circuit/SpiceModels.h"
+#include "circuit/Thermoelectric.h"
 
 #include <algorithm>
 #include <cctype>
@@ -379,6 +380,20 @@ CompiledCircuit compileCircuit(const Circuit& circuit)
         result.wireNodes[wire.id] = node;
     }
 
+    // A Peltier module also owns a thermal node: its voltage is the cold face
+    // temperature in degC. It is a real SPICE node so the engine can save it
+    // like any other voltage, but it is not an electrical net, so it stays out
+    // of nodeNumbers and of everything the UI lists as a node.
+    for (const auto& component : circuit.components) {
+        if (!isThermoelectricType(component.type)) {
+            continue;
+        }
+        const int thermalNode = nextNode++;
+        ComponentNodes& nodes = result.nodes[component.id];
+        nodes.thermalNode = thermalNode;
+        result.thermalNodes[component.id] = thermalNode;
+    }
+
     // Connection points and dangling-pin statistics.
     std::set<std::pair<int, int>> uniquePoints;
     for (const auto& pin : pins) {
@@ -546,6 +561,8 @@ CompiledCircuit compileCircuit(const Circuit& circuit)
     std::set<std::string> modelCards;
     std::set<std::string> extraModelCards;
     std::set<std::string> subcircuitCards;
+    // Per-instance subcircuits (a Peltier model carries its own heat load).
+    std::set<std::string> extraSubcircuitCards;
     netlist << "CircuitLab generated circuit\n";
     for (const auto& component : circuit.components) {
         if (component.type == ComponentType::Ground) {
@@ -662,6 +679,38 @@ CompiledCircuit compileCircuit(const Circuit& circuit)
             subcircuitCards.insert(subckt);
             break;
         }
+        case SpiceFamily::Thermoelectric: {
+            // The module is a behavioural subcircuit: the two terminals plus a
+            // thermal node carrying the cold face temperature. A burned-out
+            // plate is simply an open circuit.
+            if (component.damaged) {
+                netlist << 'R' << component.name << ' ' << nodeA << ' ' << nodeB
+                        << " 1e12\n";
+                break;
+            }
+            if (nodes.thermalNode < 0) {
+                result.error = "无法为元件 " + component.name + " 分配温度节点。";
+                return result;
+            }
+            const PinLayout& layout = pinLayout(component.type);
+            for (int pin = 0; pin < nodes.count; ++pin) {
+                netlist << pinSenseSourceName(component, pin) << ' '
+                        << nodes.pins[static_cast<size_t>(pin)] << ' '
+                        << internalPinNode(component, pin) << " 0\n";
+            }
+            netlist << 'X' << component.name;
+            for (int pin = 0; pin < layout.count; ++pin) {
+                netlist << ' ' << internalPinNode(component, pin);
+            }
+            netlist << ' ' << nodes.thermalNode << ' '
+                    << thermoelectricSubcircuitName(component) << '\n';
+            extraSubcircuitCards.insert(thermoelectricSubcircuitCard(component));
+            // The plate starts at its initial temperature and cools down from
+            // there; the DC operating point still finds the steady state.
+            netlist << ".ic v(" << nodes.thermalNode << ")="
+                    << formatNumber(component.coldStart) << '\n';
+            break;
+        }
         case SpiceFamily::Ground:
         case SpiceFamily::Port:
             // A ground symbol is the global node 0, and a terminal block only
@@ -680,6 +729,9 @@ CompiledCircuit compileCircuit(const Circuit& circuit)
     }
     for (const std::string& subckt : subcircuitCards) {
         netlist << spiceSubcircuitCard(subckt) << '\n';
+    }
+    for (const std::string& card : extraSubcircuitCards) {
+        netlist << card << '\n';
     }
     netlist << ".end\n";
 

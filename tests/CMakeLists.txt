@@ -28,6 +28,7 @@ add_executable(engine_tests
     "${CL_ROOT}/core/src/Engineering.cpp"
     "${CL_ROOT}/core/src/Examples.cpp"
     "${CL_ROOT}/core/src/Measure.cpp"
+    "${CL_ROOT}/core/src/Thermoelectric.cpp"
     "${CL_ROOT}/core/src/NgspiceEngine.cpp"
     "${CL_ROOT}/core/src/ProjectIO.cpp")
 

@@ -25,6 +25,9 @@ out/
 /third_party/
 /third_party/downloads/
 
+# ---- 测试产生的临时工程目录 ----
+/circuitlab_*_projects/
+
 # ---- 日志与临时文件 ----
 *.log
 logcat-*.txt

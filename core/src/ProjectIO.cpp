@@ -80,7 +80,11 @@ bool writeProject(const Circuit& circuit, const std::string& path, const std::st
                << component.minVoltage << ' '
                << component.maxVoltage << ' '
                << component.maxCurrent << ' '
-               << (component.damagedByCurrent ? 1 : 0) << '\n';
+               << (component.damagedByCurrent ? 1 : 0) << ' '
+               << component.ratedCurrent << ' '
+               << component.ratedPower << ' '
+               << component.heatLoad << ' '
+               << component.coldStart << '\n';
     }
     for (const auto& wire : circuit.wires) {
         output << "WIRE " << wire.id << ' ' << wire.points.size();
@@ -282,6 +286,24 @@ bool loadProject(const std::string& path, Circuit* circuit, std::string* name,
             int damagedByCurrent = 0;
             if (stream >> damagedByCurrent) {
                 component.damagedByCurrent = damagedByCurrent != 0;
+            }
+            // The load spec (rated current / power) and the Peltier state were
+            // appended later; older files stop here and get the defaults.
+            double ratedCurrent = 0.0;
+            if (stream >> ratedCurrent) {
+                component.ratedCurrent = ratedCurrent;
+                double ratedPower = 0.0;
+                if (stream >> ratedPower) {
+                    component.ratedPower = ratedPower;
+                }
+                double heatLoad = 0.0;
+                if (stream >> heatLoad) {
+                    component.heatLoad = heatLoad;
+                }
+                double coldStart = 0.0;
+                if (stream >> coldStart) {
+                    component.coldStart = coldStart;
+                }
             }
             applyLoadDefaults(component);
             if (isLoadType(component.type) && component.ratedVoltage <= 0.0) {

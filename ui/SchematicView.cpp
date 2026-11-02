@@ -837,6 +837,41 @@ void App::drawComponent(ImDrawList* drawList, const Component& component, bool s
         drawList->AddCircleFilled(center, 0.14f * gp, body);
         break;
     }
+    case ComponentType::Tec12706:
+    case ComponentType::Tec12710: {
+        // A Peltier plate: two ceramic faces with the couples between them.
+        // The face being cooled is tinted ice blue and the one dumping heat
+        // warm orange, so reversing the supply is obvious at a glance.
+        const bool pumpingHeat = flowing && !damagedLoad && std::fabs(current) > 1e-4;
+        const bool cooling = pumpingHeat && current > 0.0;
+        const ImU32 coldFace = cooling ? IM_COL32(130, 205, 255, 255) : body;
+        const ImU32 hotFace = cooling ? IM_COL32(255, 150, 110, 255) : body;
+        drawList->AddLine(P(0, -2), P(0, -1.15f), body, t);
+        drawList->AddLine(P(0, 1.15f), P(0, 2), body, t);
+        drawList->AddLine(P(-0.95f, -1.15f), P(0.95f, -1.15f), coldFace, 1.25f * t);
+        drawList->AddLine(P(-0.95f, 1.15f), P(0.95f, 1.15f), hotFace, 1.25f * t);
+        for (int couple = 0; couple < 3; ++couple) {
+            const float x = -0.52f + 0.52f * static_cast<float>(couple);
+            drawList->AddLine(P(x, -1.15f), P(x, 1.15f), detail, 1.5f * uiScale_);
+        }
+        // Heat is pumped from the cold face towards the hot one: one arrow per
+        // pellet, flipping when the current is reversed.
+        if (pumpingHeat) {
+            const float direction = current > 0.0 ? 1.0f : -1.0f;
+            const ImU32 arrowColor =
+                current > 0.0 ? IM_COL32(130, 205, 255, 255) : IM_COL32(255, 150, 110, 255);
+            for (int couple = 0; couple < 3; ++couple) {
+                const float x = -0.52f + 0.52f * static_cast<float>(couple);
+                const float y0 = -0.5f * direction;
+                const float y1 = 0.5f * direction;
+                drawList->AddLine(P(x, y0), P(x, y1), arrowColor, 1.8f * uiScale_);
+                drawList->AddTriangleFilled(P(x - 0.13f, y1 - 0.18f * direction),
+                                            P(x + 0.13f, y1 - 0.18f * direction),
+                                            P(x, y1), arrowColor);
+            }
+        }
+        break;
+    }
     case ComponentType::Diode:
     case ComponentType::Led:
     case ComponentType::Zener: {
@@ -1570,6 +1605,17 @@ void drawComponentGlyph(ImDrawList* drawList, ImVec2 center, float size,
         for (int blade = 0; blade < 3; ++blade) {
             const float angle = static_cast<float>(blade) * 2.0943951f;
             line(0.0f, 0.0f, std::cos(angle) * 0.42f, std::sin(angle) * 0.42f);
+        }
+        break;
+    case ComponentType::Tec12706:
+    case ComponentType::Tec12710:
+        line(-0.95f, 0.0f, -0.55f, 0.0f);
+        line(0.55f, 0.0f, 0.95f, 0.0f);
+        line(-0.55f, -0.55f, -0.55f, 0.55f);
+        line(0.55f, -0.55f, 0.55f, 0.55f);
+        for (int couple = 0; couple < 3; ++couple) {
+            const float y = -0.32f + 0.32f * static_cast<float>(couple);
+            line(-0.34f, y, 0.34f, y);
         }
         break;
     case ComponentType::Diode:

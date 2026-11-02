@@ -494,6 +494,18 @@ SimulationResult NgspiceEngine::run(const SimulationRequest& request)
     }
     ngSpice_UnlockRealloc();
 
+    // Pull the Peltier thermal nodes out of the node table: their voltage is a
+    // temperature, not a circuit node, so the UI must not list them with the
+    // electrical nets.
+    for (const auto& entry : compiled.thermalNodes) {
+        const auto found = result.nodeVoltage.find(entry.second);
+        if (found == result.nodeVoltage.end()) {
+            continue;
+        }
+        result.coldTemperature.emplace(entry.first, std::move(found->second));
+        result.nodeVoltage.erase(found);
+    }
+
     // Reorganize branch currents per component pin. Two-pin devices use
     // pin A -> pin B; multi-pin devices read their per-pin sense sources.
     for (const auto& component : request.circuit.components) {

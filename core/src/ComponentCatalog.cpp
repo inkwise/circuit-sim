@@ -30,9 +30,9 @@ CatalogEntry makeEntry(ComponentType type, ComponentCategory category,
     return entry;
 }
 
-const std::array<CatalogEntry, 30>& catalog()
+const std::array<CatalogEntry, 32>& catalog()
 {
-    static const std::array<CatalogEntry, 30> entries = {{
+    static const std::array<CatalogEntry, 32> entries = {{
         makeEntry(ComponentType::Resistor, ComponentCategory::Basic,
                   SpiceFamily::Resistor, "R", "电阻", "1 kΩ", "R",
                   {{0, -2, "A"}, {0, 2, "B"}}, 1, 2),
@@ -136,6 +136,15 @@ const std::array<CatalogEntry, 30>& catalog()
                   SpiceFamily::Port, "TERM", "2 脚端子",
                   "接线端子 / 板级接口", "J",
                   {{0, -2, "1"}, {0, 2, "2"}}, 1, 2),
+        // Peltier coolers: DC loads whose cold face cools down over time.
+        makeEntry(ComponentType::Tec12706, ComponentCategory::SwitchLoad,
+                  SpiceFamily::Thermoelectric, "TEC12706", "制冷片 12706",
+                  "TEC1-12706 · 12 V 6 A · 57 W", "TEC",
+                  {{0, -2, "A"}, {0, 2, "B"}}, 1, 2, true, true),
+        makeEntry(ComponentType::Tec12710, ComponentCategory::SwitchLoad,
+                  SpiceFamily::Thermoelectric, "TEC12710", "制冷片 12710",
+                  "TEC1-12710 · 12 V 10.5 A · 92 W", "TEC",
+                  {{0, -2, "A"}, {0, 2, "B"}}, 1, 2, true, true),
     }};
     return entries;
 }
@@ -236,7 +245,8 @@ bool needsPinSensing(ComponentType type)
 {
     const SpiceFamily family = componentInfo(type).family;
     return family == SpiceFamily::Bjt || family == SpiceFamily::Mos ||
-           family == SpiceFamily::Subcircuit;
+           family == SpiceFamily::Subcircuit ||
+           family == SpiceFamily::Thermoelectric;
 }
 
 bool forcesTransient(ComponentType type)

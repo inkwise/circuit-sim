@@ -8,6 +8,7 @@
 
 #include "circuit/ComponentCatalog.h"
 #include "circuit/Engineering.h"
+#include "circuit/Thermoelectric.h"
 
 #include "imgui.h"
 
@@ -828,6 +829,38 @@ bool App::numberFieldInfo(const Component* component, NumberField field,
         result.logarithmic = true;
         result.sliderFormat = "";
         return finish(result);
+    case NumberField::RatedCurrent:
+        result.title = "额定电流";
+        result.unit = "A";
+        result.value = loadRatedCurrent(*component);
+        result.minimum = 0.001;
+        result.maximum = 50.0;
+        result.sliderFormat = "%.2f A";
+        return finishIntegral(result);
+    case NumberField::RatedPower:
+        result.title = "额定功率";
+        result.unit = "W";
+        result.value = loadRatedPower(*component);
+        result.minimum = 0.01;
+        result.maximum = 500.0;
+        result.sliderFormat = "%.1f W";
+        return finishIntegral(result);
+    case NumberField::HeatLoad:
+        result.title = "冷面热负载";
+        result.unit = "W";
+        result.value = component->heatLoad;
+        result.minimum = 0.0;
+        result.maximum = 100.0;
+        result.sliderFormat = "%.1f W";
+        return finishIntegral(result);
+    case NumberField::ColdStart:
+        result.title = "初始冷面温度";
+        result.unit = "°C";
+        result.value = component->coldStart;
+        result.minimum = -40.0;
+        result.maximum = 60.0;
+        result.sliderFormat = "%.1f °C";
+        return finishIntegral(result);
     case NumberField::Amplitude:
         result.title = component->source.mode == Waveform::DC ? "电压" : "幅值";
         result.unit = "V";
@@ -893,7 +926,13 @@ void App::applyNumberField(int componentId, NumberField field, double value)
 
     switch (field) {
     case NumberField::Value:
-        component->value = value;
+        if (isLoadType(component->type) && !isThermoelectricType(component->type)) {
+            // The rated current/power follow the resistance, so the card can
+            // never show a spec that contradicts the part.
+            setLoadResistance(*component, value);
+        } else {
+            component->value = value;
+        }
         break;
     case NumberField::SeriesR:
         component->seriesR = value;
@@ -908,6 +947,18 @@ void App::applyNumberField(int componentId, NumberField field, double value)
         applyLoadDefaults(*component);
         break;
     }
+    case NumberField::RatedCurrent:
+        setLoadRatedCurrent(*component, value);
+        break;
+    case NumberField::RatedPower:
+        setLoadRatedPower(*component, value);
+        break;
+    case NumberField::HeatLoad:
+        component->heatLoad = std::max(0.0, value);
+        break;
+    case NumberField::ColdStart:
+        component->coldStart = value;
+        break;
     case NumberField::MinVoltage:
         component->minVoltage = value;
         break;
@@ -1289,6 +1340,12 @@ void App::drawSelectionCard()
         case ComponentType::TerminalBlock:
             height = dp(96.0f);
             break;
+        case ComponentType::Tec12706:
+        case ComponentType::Tec12710:
+            // Spec line, temperature, electrical readout, the two model
+            // parameters and the cooldown curve.
+            height = dp(248.0f);
+            break;
         case ComponentType::Bulb:
         case ComponentType::Fan: {
             // Two parameters per row on a wide card, one per row on a phone
@@ -1511,6 +1568,155 @@ void App::drawSelectionCard()
     } else if (component->type == ComponentType::TerminalBlock) {
         ImGui::SetCursorPos(ImVec2(dp(2.0f), contentY));
         ImGui::TextDisabled("两只螺丝互不相连，仅用来标记板级接口");
+    } else if (isThermoelectricType(component->type)) {
+        // Peltier cooler: a fixed datasheet module, so the card shows what the
+        // simulation makes of it - cold face temperature, cooling power and
+        // efficiency - plus the two model parameters of the thermal side.
+        const ThermoelectricSpec* spec = thermoelectricSpec(component->type);
+        const size_t sample = liveSampleIndex();
+        const auto temperatureText = [](double celsius) {
+            char text[32];
+            std::snprintf(text, sizeof(text), "%.1f °C", celsius);
+            return std::string(text);
+        };
+        const auto cold = result_.coldTemperature.find(component->id);
+        const bool haveSimulation =
+            live_ && hasResult_ && result_.ok && resultRevision_ == circuit_.revision &&
+            cold != result_.coldTemperature.end() && !cold->second.empty();
+        const auto sampleAt = [&](size_t index) {
+            return cold->second[std::min(index, cold->second.size() - 1)];
+        };
+
+        ImGui::SetCursorPos(ImVec2(dp(2.0f), contentY));
+        if (spec) {
+            ImGui::TextDisabled("%s · 额定 %s / %s / %s", spec->model,
+                                formatSI(spec->ratedVoltage, "V").c_str(),
+                                formatSI(spec->ratedCurrent, "A").c_str(),
+                                formatSI(spec->maxPumping, "W").c_str());
+        }
+
+        const float row1 = contentY + dp(25.0f);
+        const float row2 = row1 + dp(31.0f);
+        const float row3 = row2 + dp(27.0f);
+        ImGui::SetCursorPos(ImVec2(dp(2.0f), row1));
+        if (component->damaged) {
+            ImGui::TextColored(Theme::toVec4(Theme::danger()),
+                               component->damagedByCurrent ? "过流损坏" : "过压损坏");
+            ImGui::SameLine(0.0f, dp(10.0f));
+            if (accentButton("修复", ImVec2(dp(66.0f), dp(32.0f)))) {
+                pushUndo();
+                component->damaged = false;
+                component->damagedByCurrent = false;
+                circuit_.touch();
+                markChanged();
+            }
+        } else if (haveSimulation) {
+            ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 1.05f);
+            ImGui::Text("冷面 %s", temperatureText(sampleAt(sample)).c_str());
+            ImGui::PopFont();
+            ImGui::SameLine(0.0f, dp(10.0f));
+            ImGui::TextDisabled("稳定 %s · 温差 %s",
+                                temperatureText(cold->second.back()).c_str(),
+                                formatSI(thermoelectricHotSide() - cold->second.back(), "K")
+                                    .c_str());
+        } else {
+            ImGui::TextDisabled("冷面 %s · 启动仿真后显示降温过程",
+                                temperatureText(component->coldStart).c_str());
+        }
+
+        ImGui::SetCursorPos(ImVec2(dp(2.0f), row2));
+        if (haveSimulation && spec) {
+            double voltage = 0.0;
+            double current = 0.0;
+            if (voltageAcross(*component, sample, &voltage) &&
+                currentFor(*component, sample, &current)) {
+                ThermoelectricPoint point;
+                thermoelectricFromMeasurement(*spec, voltage, current,
+                                              sampleAt(sample), &point);
+                ImGui::Text("电流 %s · 制冷 %s · 输入 %s · COP %.2f",
+                            formatSI(current, "A").c_str(),
+                            formatSI(point.heatPumped, "W").c_str(),
+                            formatSI(point.inputPower, "W").c_str(), point.cop);
+            } else {
+                ImGui::TextDisabled("等待电流与电压读数");
+            }
+        } else if (spec) {
+            ImGui::TextDisabled("上限 %s / %s / %s · 温差上限 %s",
+                                formatSI(spec->maxVoltage, "V").c_str(),
+                                formatSI(spec->maxCurrent, "A").c_str(),
+                                formatSI(spec->maxPumping, "W").c_str(),
+                                formatSI(spec->maxDeltaT, "K").c_str());
+        }
+
+        // Editable model parameters: where the plate starts and how much heat
+        // leaks back into its cold face.
+        ImGui::SetCursorPos(ImVec2(dp(2.0f), row3));
+        ImGui::TextDisabled("初始");
+        ImGui::SameLine(0.0f, dp(6.0f));
+        drawValueChip("##coldstart_chip", component->id, NumberField::ColdStart,
+                      temperatureText(component->coldStart), ImVec2(dp(84.0f), chipHeight));
+        ImGui::SameLine(0.0f, dp(12.0f));
+        ImGui::TextDisabled("热负载");
+        ImGui::SameLine(0.0f, dp(6.0f));
+        drawValueChip("##heatload_chip", component->id, NumberField::HeatLoad,
+                      formatSI(component->heatLoad, "W"), ImVec2(dp(84.0f), chipHeight));
+        ImGui::SameLine(0.0f, dp(10.0f));
+        ImGui::TextDisabled("热面 %.0f °C", thermoelectricHotSide());
+
+        // Cooldown curve of the cold face over the simulated window, with the
+        // heat sink temperature as a reference line.
+        if (haveSimulation && cold->second.size() > 3 && !result_.time.empty()) {
+            const float curveHeight = dp(46.0f);
+            const float row4 = std::max(row3 + dp(38.0f), height - curveHeight - dp(18.0f));
+            ImGui::SetCursorPos(ImVec2(dp(2.0f), row4));
+            const ImVec2 topLeft = ImGui::GetCursorScreenPos();
+            const float curveWidth = std::max(dp(120.0f), width - dp(26.0f));
+            ImGui::Dummy(ImVec2(curveWidth, curveHeight));
+            const ImVec2 bottomRight(topLeft.x + curveWidth, topLeft.y + curveHeight);
+            ImDrawList* drawList = ImGui::GetWindowDrawList();
+            drawList->AddRectFilled(topLeft, bottomRight, IM_COL32(0, 0, 0, 70), dp(8.0f));
+
+            double low = cold->second[0];
+            double high = cold->second[0];
+            for (double value : cold->second) {
+                low = std::min(low, value);
+                high = std::max(high, value);
+            }
+            low = std::min(low, thermoelectricHotSide() - 1.0);
+            high = std::max(high, thermoelectricHotSide() + 1.0);
+            const double span = std::max(1e-6, high - low);
+            const float inset = dp(5.0f);
+            const auto plotPoint = [&](size_t i) {
+                const float u = cold->second.size() > 1
+                                    ? static_cast<float>(i) /
+                                          static_cast<float>(cold->second.size() - 1)
+                                    : 1.0f;
+                const float v = static_cast<float>((cold->second[i] - low) / span);
+                return ImVec2(topLeft.x + inset + u * (curveWidth - inset * 2.0f),
+                              bottomRight.y - inset - v * (curveHeight - inset * 2.0f));
+            };
+            const float ambientV =
+                static_cast<float>((thermoelectricHotSide() - low) / span);
+            const float ambientY =
+                bottomRight.y - inset - ambientV * (curveHeight - inset * 2.0f);
+            drawList->AddLine(ImVec2(topLeft.x + inset, ambientY),
+                              ImVec2(bottomRight.x - inset, ambientY),
+                              IM_COL32(255, 255, 255, 40), 1.0f);
+            std::vector<ImVec2> points;
+            points.reserve(cold->second.size());
+            for (size_t i = 0; i < cold->second.size(); ++i) {
+                points.push_back(plotPoint(i));
+            }
+            // Cold blue for the cold face: the curve falls away from ambient.
+            drawList->AddPolyline(points.data(), static_cast<int>(points.size()),
+                                  IM_COL32(120, 200, 255, 255), 0, 2.0f * uiScale_);
+            ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 0.8f);
+            drawList->AddText(ImVec2(topLeft.x + dp(6.0f), topLeft.y + dp(1.0f)),
+                              Theme::muted(), temperatureText(high).c_str());
+            drawList->AddText(ImVec2(topLeft.x + dp(6.0f), bottomRight.y - dp(15.0f)),
+                              Theme::muted(), temperatureText(low).c_str());
+            ImGui::PopFont();
+        }
     } else if (isLoadType(component->type)) {
         valueRow(contentY);
 
@@ -1546,10 +1752,17 @@ void App::drawSelectionCard()
         const int gridLines = twoColumns ? 2 : 4;
         const float row3 = gridTop + rowHeight * static_cast<float>(gridLines) + dp(4.0f);
 
+        // The nominal spec of the part: the voltage is the row above, and the
+        // current and power are editable here. They are linked (P = V * I), so
+        // typing either one re-derives the resistance.
         ImGui::SetCursorPos(ImVec2(dp(2.0f), row3));
-        ImGui::TextDisabled("额定 %s · %s · %s", formatSI(component->ratedVoltage, "V").c_str(),
-                            formatSI(loadRatedCurrent(*component), "A").c_str(),
-                            formatSI(loadRatedPower(*component), "W").c_str());
+        drawValueChip("##ratedcurrent_chip", component->id, NumberField::RatedCurrent,
+                      formatSI(loadRatedCurrent(*component), "A"),
+                      ImVec2(dp(78.0f), chipHeight));
+        ImGui::SameLine(0.0f, dp(6.0f));
+        drawValueChip("##ratedpower_chip", component->id, NumberField::RatedPower,
+                      formatSI(loadRatedPower(*component), "W"),
+                      ImVec2(dp(78.0f), chipHeight));
         ImGui::SameLine(0.0f, dp(10.0f));
         if (component->damaged) {
             ImGui::TextColored(Theme::toVec4(Theme::danger()),

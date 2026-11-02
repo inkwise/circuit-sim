@@ -42,6 +42,9 @@ struct SimulationResult {
     // Component id -> currents for every pin in netlist order. Two-pin devices
     // derive pin 1 as -pin 0; multi-pin devices use the per-pin sense sources.
     std::map<int, std::vector<std::vector<double>>> pinCurrent;
+    // Peltier modules only: cold face temperature in degC, one sample per
+    // point of the analysis (1 for the operating point).
+    std::map<int, std::vector<double>> coldTemperature;
     int nodeCount = 0;
 };
 

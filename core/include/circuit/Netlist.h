@@ -12,6 +12,10 @@ namespace circuitlab {
 struct ComponentNodes {
     std::array<int, kMaxComponentPins> pins{};
     int count = 0;
+    // Peltier modules only: the node whose voltage is the cold face
+    // temperature in degC, or -1. It is a real SPICE node but not an
+    // electrical net, so it stays out of `nodeNumbers`.
+    int thermalNode = -1;
 
     int a() const { return count > 0 ? pins[0] : -1; }
     int b() const { return count > 1 ? pins[1] : -1; }
@@ -24,6 +28,7 @@ struct CompiledCircuit {
     std::map<int, ComponentNodes> nodes;  // component id -> assigned SPICE nodes
     std::map<int, int> wireNodes;        // wire id -> assigned node
     std::vector<int> nodeNumbers;        // non-ground node numbers, sorted
+    std::map<int, int> thermalNodes;     // component id -> cold face node
     std::vector<Point> connectionPoints; // pins and wire vertices for rendering
     int danglingPins = 0;
     int groundCount = 0;

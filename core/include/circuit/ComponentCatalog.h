@@ -32,6 +32,9 @@ enum class SpiceFamily {
     Bjt,
     Mos,
     Subcircuit,
+    // A Peltier module: a subcircuit with the module terminals plus a thermal
+    // node whose voltage is the cold face temperature.
+    Thermoelectric,
     Ground,
     // A mechanical part: the two screws of a terminal block are isolated from
     // each other, so it only names two nets and emits no SPICE card.
@@ -60,7 +63,10 @@ struct ComponentInfo {
     const char* label = "";         // Chinese display name
     const char* description = "";   // default value / short hint for cards
     const char* prefix = "R";       // SPICE reference prefix
-    bool forcesTransient = false;   // internally oscillating parts (555)
+    // Parts that always need a transient analysis: internally oscillating ones
+    // (555) and ones with their own time evolution (a Peltier plate cooling
+    // down).
+    bool forcesTransient = false;
     bool available = true;          // included in the component picker
 };
 

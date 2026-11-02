@@ -1,5 +1,7 @@
 #include "circuit/Engineering.h"
 
+#include "circuit/Thermoelectric.h"
+
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -481,6 +483,14 @@ std::string componentValueLabel(const Component& component)
         return "NOT";
     case ComponentType::Regulator7805:
         return "5 V";
+    case ComponentType::Tec12706:
+    case ComponentType::Tec12710: {
+        const ThermoelectricSpec* tec = thermoelectricSpec(component.type);
+        if (component.damaged) {
+            return component.damagedByCurrent ? "过流损坏" : "过压损坏";
+        }
+        return tec ? tec->model : "TEC";
+    }
     case ComponentType::Oscilloscope:
         return formatSI(component.value, "Ω") + " 探头";
     case ComponentType::TerminalBlock:

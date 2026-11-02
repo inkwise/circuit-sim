@@ -49,6 +49,10 @@ public:
         MinVoltage,      // loads: start-up voltage
         MaxVoltage,      // loads: maximum voltage before it burns out
         MaxCurrent,      // loads: current limit
+        RatedCurrent,    // loads: nominal current (the spec, not the limit)
+        RatedPower,      // loads: nominal power
+        HeatLoad,        // Peltier: heat leaking into the cold face
+        ColdStart,       // Peltier: cold face temperature at t = 0
         Amplitude,       // source DC value / amplitude
         Frequency,       // source frequency
         Duty,            // PWM duty cycle, in percent

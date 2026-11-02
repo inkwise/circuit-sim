@@ -92,6 +92,7 @@ std::string projectTimestamp(long long seconds)
 // Name of the example project the app ships with, and the marker that keeps it
 // from being re-created after the user deletes it.
 const char* kMosExampleName = "MOS 开关板示例";
+const char* kTecExampleName = "制冷片示例 TEC1-12706";
 const char* kExampleHint =
     "示例工程：按左下角启动仿真，再看 结果 → 示波 读平均值和纹波";
 
@@ -210,24 +211,36 @@ void App::init(const std::string& baseDir, float uiScale)
 
 void App::seedExampleProjects()
 {
-    // Ship one ready-to-run example so a fresh install has something to open and
-    // simulate immediately. A marker file makes this a one-time action.
-    const std::string marker = baseDir_ + "examples-v1.marker";
+    // Ship a couple of ready-to-run examples so a fresh install has something
+    // to open and simulate immediately. A marker file makes this a one-time
+    // action; the version suffix lets a new example reach existing installs.
+    const std::string marker = baseDir_ + "examples-v2.marker";
     if (access(marker.c_str(), F_OK) == 0) {
         return;
     }
-    bool alreadyThere = false;
-    for (const auto& project : projects_) {
-        if (project.name == kMosExampleName) {
-            alreadyThere = true;
-            break;
+    struct SeededExample {
+        const char* name;
+        Circuit (*build)();
+    };
+    const SeededExample examples[] = {
+        {kMosExampleName, &makeMosSwitchBoardDemo},
+        {kTecExampleName, &makeThermoelectricDemo},
+    };
+    for (const SeededExample& example : examples) {
+        bool alreadyThere = false;
+        for (const auto& project : projects_) {
+            if (project.name == example.name) {
+                alreadyThere = true;
+                break;
+            }
         }
-    }
-    std::string error;
-    if (!alreadyThere) {
+        if (alreadyThere) {
+            continue;
+        }
+        std::string error;
         const std::string path = makeProjectPath(projectsDir_);
-        if (saveProject(makeMosSwitchBoardDemo(), path, kMosExampleName, &error)) {
-            toast_ = "已加入示例工程：MOS 开关板";
+        if (saveProject(example.build(), path, example.name, &error)) {
+            toast_ = std::string("已加入示例工程：") + example.name;
             toastAt_ = SDL_GetTicks();
         }
     }
@@ -1878,9 +1891,14 @@ void App::checkLoadDamage()
         if (!voltageAcross(component, index, &voltage)) {
             continue;
         }
-        // The current is what the load actually draws at that voltage.
-        const double resistance = std::max(1e-6, component.value);
-        const double current = voltage / resistance;
+        // The current is what the load actually draws at that voltage: use the
+        // simulated branch current when there is one (a Peltier module is not a
+        // plain resistor), otherwise fall back to V / R.
+        double current = 0.0;
+        if (!currentFor(component, index, &current) || !std::isfinite(current)) {
+            const double resistance = std::max(1e-6, component.value);
+            current = voltage / resistance;
+        }
         const LoadFault fault = loadFault(component, voltage, current);
         if (fault != LoadFault::None) {
             component.damaged = true;

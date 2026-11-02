@@ -53,6 +53,10 @@ enum class ComponentType {
     // Instruments and connectors.
     Oscilloscope,    // 1 MΩ differential probe with ripple statistics
     TerminalBlock,   // 2-pin screw terminal (electrically a short)
+    // Peltier coolers: a DC load whose current falls as the cold face gets
+    // cold, with a lumped thermal model of that cold face.
+    Tec12706,        // TEC1-12706, 12 V / 6 A, Qmax 57 W
+    Tec12710,        // TEC1-12710, 12 V / 10.5 A, Qmax 92 W
 };
 
 enum class Waveform {
@@ -88,8 +92,17 @@ struct Component {
     double minVoltage = 0.0;
     double maxVoltage = 0.0;
     double maxCurrent = 0.0;
+    // Nominal electrical spec of a load: a lamp is a "12 V / 12 W" part and a
+    // Peltier module a "12 V / 6 A" one. They are kept consistent with the
+    // equivalent resistance (R = V / I, P = V * I), and all three are editable.
+    double ratedCurrent = 0.0;  // A
+    double ratedPower = 0.0;    // W
     bool damaged = false;       // loads only: open after a fault; recoverable
     bool damagedByCurrent = false;  // true when the fault was overcurrent
+    // Peltier modules only: heat leaking into the cold face (W) and the cold
+    // face temperature at the start of the transient (degC).
+    double heatLoad = 0.0;
+    double coldStart = 20.0;
     // Series resistance of a real part: winding resistance of a power inductor
     // (DCR) or the ESR of an electrolytic capacitor. 0 means ideal.
     double seriesR = 0.0;
@@ -142,9 +155,24 @@ LoadFault loadFault(const Component& component, double voltage, double current);
 // dims smoothly and a motor spins up with voltage.
 double loadLevel(const Component& component, double voltage);
 
-// Nominal current (ratedVoltage / value) and nominal power, for display.
+// Nominal current and power of a load: the stored spec when it has one,
+// otherwise derived from ratedVoltage and the equivalent resistance.
 double loadRatedCurrent(const Component& component);
 double loadRatedPower(const Component& component);
+
+// The four specs of a load are linked by R = V / I and P = V * I. Editing one
+// recomputes the others, so the parameter card can never show a load whose
+// numbers contradict its resistance.
+// - A new rated voltage keeps the resistance (same filament / winding), so the
+//   current and power follow.
+void setLoadRatedVoltage(Component& component, double volts);
+// - A new rated current or power is the spec edit: the resistance follows.
+void setLoadRatedCurrent(Component& component, double amps);
+void setLoadRatedPower(Component& component, double watts);
+// - A new resistance keeps the rated voltage.
+void setLoadResistance(Component& component, double ohms);
+// Recomputes the stored current/power from the voltage and the resistance.
+void syncLoadSpec(Component& component);
 
 // True for the measuring probe (oscilloscope with a 1 MΩ input).
 bool isProbeType(ComponentType type);

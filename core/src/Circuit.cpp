@@ -1,5 +1,7 @@
 #include "circuit/Circuit.h"
 
+#include "circuit/Thermoelectric.h"
+
 #include "circuit/ComponentCatalog.h"
 
 #include <algorithm>
@@ -97,12 +99,34 @@ bool isSourceType(ComponentType type)
 
 bool isLoadType(ComponentType type)
 {
-    return type == ComponentType::Bulb || type == ComponentType::Fan;
+    return type == ComponentType::Bulb || type == ComponentType::Fan ||
+           isThermoelectricType(type);
 }
 
 void applyLoadDefaults(Component& component)
 {
     if (!isLoadType(component.type)) {
+        return;
+    }
+    if (const ThermoelectricSpec* tec = thermoelectricSpec(component.type)) {
+        // A Peltier module is a fixed part: the datasheet spec is not user
+        // editable, and exceeding the maximum voltage or current is what
+        // destroys it (thermal runaway). The tolerance on the current leaves
+        // room for the inrush current of a plate that is still at ambient.
+        component.ratedVoltage = tec->ratedVoltage;
+        component.ratedCurrent = tec->ratedCurrent;
+        component.ratedPower = tec->ratedPower;
+        component.minVoltage = std::max(0.5, tec->ratedVoltage * 0.08);
+        component.maxVoltage = tec->maxVoltage;
+        // A plate that is still at ambient draws Vmax/R at turn-on, which is
+        // well above Imax: the datasheet limit is a steady-state one, so the
+        // limit here only trips on a genuinely abusive supply.
+        component.maxCurrent = tec->maxCurrent * 1.35;
+        component.value = component.value > 0.0 ? component.value : 0.0;
+        component.heatLoad = std::max(0.0, component.heatLoad);
+        if (!(component.coldStart > -273.0) || component.coldStart > 200.0) {
+            component.coldStart = thermoelectricHotSide();
+        }
         return;
     }
     const double rated = component.ratedVoltage > 0.0
@@ -126,6 +150,66 @@ void applyLoadDefaults(Component& component)
     component.minVoltage = std::min(component.minVoltage, rated);
     component.maxVoltage = std::max(component.maxVoltage, rated);
     component.maxCurrent = std::max(component.maxCurrent, 0.0);
+    syncLoadSpec(component);
+}
+
+void syncLoadSpec(Component& component)
+{
+    if (!isLoadType(component.type)) {
+        return;
+    }
+    if (isThermoelectricType(component.type)) {
+        return;  // fixed datasheet part
+    }
+    if (!(component.ratedVoltage > 0.0)) {
+        return;
+    }
+    if (component.value > 0.0) {
+        component.ratedCurrent = component.ratedVoltage / component.value;
+        component.ratedPower = component.ratedVoltage * component.ratedCurrent;
+    } else {
+        component.ratedCurrent = 0.0;
+        component.ratedPower = 0.0;
+    }
+}
+
+void setLoadRatedVoltage(Component& component, double volts)
+{
+    if (!(volts > 0.0)) {
+        return;
+    }
+    component.ratedVoltage = volts;
+    // The filament / winding stays the same, so this only rescales the spec.
+    syncLoadSpec(component);
+}
+
+void setLoadResistance(Component& component, double ohms)
+{
+    if (!(ohms > 0.0)) {
+        return;
+    }
+    component.value = ohms;
+    syncLoadSpec(component);
+}
+
+void setLoadRatedCurrent(Component& component, double amps)
+{
+    if (!(amps > 0.0) || !(component.ratedVoltage > 0.0)) {
+        return;
+    }
+    component.ratedCurrent = amps;
+    component.value = component.ratedVoltage / amps;
+    component.ratedPower = component.ratedVoltage * amps;
+}
+
+void setLoadRatedPower(Component& component, double watts)
+{
+    if (!(watts > 0.0) || !(component.ratedVoltage > 0.0)) {
+        return;
+    }
+    component.ratedPower = watts;
+    component.ratedCurrent = watts / component.ratedVoltage;
+    component.value = component.ratedVoltage / component.ratedCurrent;
 }
 
 LoadFault loadFault(const Component& component, double voltage, double current)
@@ -169,6 +253,9 @@ double loadLevel(const Component& component, double voltage)
 
 double loadRatedCurrent(const Component& component)
 {
+    if (component.ratedCurrent > 0.0) {
+        return component.ratedCurrent;
+    }
     const double resistance = component.value > 0.0 ? component.value : 0.0;
     if (!(resistance > 0.0) || !(component.ratedVoltage > 0.0)) {
         return 0.0;
@@ -178,6 +265,9 @@ double loadRatedCurrent(const Component& component)
 
 double loadRatedPower(const Component& component)
 {
+    if (component.ratedPower > 0.0) {
+        return component.ratedPower;
+    }
     return component.ratedVoltage * loadRatedCurrent(component);
 }
 
@@ -413,6 +503,19 @@ int Circuit::addComponent(ComponentType type, int gridX, int gridY)
         component.value = 220e-6;
         component.seriesR = 0.12;
         break;
+    case ComponentType::Tec12706:
+    case ComponentType::Tec12710: {
+        const ThermoelectricSpec* tec = thermoelectricSpec(component.type);
+        component.value = 0.0;
+        component.heatLoad = 0.0;
+        component.coldStart = thermoelectricHotSide();
+        if (tec) {
+            component.ratedVoltage = tec->ratedVoltage;
+            component.ratedCurrent = tec->ratedCurrent;
+            component.ratedPower = tec->ratedPower;
+        }
+        break;
+    }
     case ComponentType::PwmSource:
         component.value = 5.0;
         component.source.mode = Waveform::Pulse;
