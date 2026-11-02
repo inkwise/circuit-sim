@@ -1393,6 +1393,9 @@ void App::drawSettingsPopup()
                         "含 PWM 信号源时会自动放宽。");
     ImGui::PopTextWrapPos();
     ImGui::TextDisabled("界面帧率 %.0f fps", ImGui::GetIO().Framerate);
+    ImGui::SameLine(0.0f, dp(12.0f));
+    // Build stamp: makes it obvious which APK is actually installed.
+    ImGui::TextDisabled("版本 0.1.0 · 构建 %s %s", __DATE__, __TIME__);
     ImGui::Separator();
 
     const ImVec2 size(dp(140.0f), dp(44.0f));

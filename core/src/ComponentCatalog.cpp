@@ -81,6 +81,10 @@ const std::array<CatalogEntry, 35>& catalog()
         makeEntry(ComponentType::Nmos, ComponentCategory::Transistor,
                   SpiceFamily::Mos, "NMOS", "N-MOS", "2N7000", "M",
                   {{1, -1, "D"}, {-1, 0, "G"}, {1, 1, "S"}}, 1, 1, false, true),
+        makeEntry(ComponentType::Irl540N, ComponentCategory::Transistor,
+                  SpiceFamily::Mos, "NMOSIRL540", "IRL540N",
+                  "100 V · 28 A · 44 mΩ 逻辑电平", "M",
+                  {{1, -1, "D"}, {-1, 0, "G"}, {1, 1, "S"}}, 1, 1, false, true),
         makeEntry(ComponentType::OpAmp, ComponentCategory::AnalogIC,
                   SpiceFamily::Subcircuit, "OPAMP", "运放", "理想单运放", "X",
                   {{-2, -1, "IN+"}, {-2, 1, "IN-"}, {2, 0, "OUT"},
@@ -145,12 +149,6 @@ const std::array<CatalogEntry, 35>& catalog()
                   SpiceFamily::Thermoelectric, "TEC12710", "制冷片 12710",
                   "TEC1-12710 · 12 V 10.5 A · 92 W", "TEC",
                   {{0, -1, "A"}, {0, 1, "B"}}, 1, 1, true, true),
-        // Real board parts: a known logic-level MOSFET, an MLCC and a power
-        // resistor.
-        makeEntry(ComponentType::Irl540N, ComponentCategory::Transistor,
-                  SpiceFamily::Mos, "NMOSIRL540", "IRL540N",
-                  "100 V · 28 A · 44 mΩ 逻辑电平", "M",
-                  {{1, -1, "D"}, {-1, 0, "G"}, {1, 1, "S"}}, 1, 1, false, true),
         makeEntry(ComponentType::CeramicCap, ComponentCategory::PowerFilter,
                   SpiceFamily::Capacitor, "CMLCC", "陶瓷电容",
                   "100 nF · ESR 10 mΩ · ESL 2 nH", "C",

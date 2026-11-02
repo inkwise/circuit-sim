@@ -36,6 +36,8 @@ enum class ComponentType {
     Npn,
     Pnp,
     Nmos,
+    // A named logic-level power MOSFET, listed with the other transistors.
+    Irl540N,         // IRL540N: 100 V / 28 A / 44 mΩ, on-resistance fitted
     OpAmp,
     Timer555,
     GateAnd,
@@ -59,7 +61,6 @@ enum class ComponentType {
     Tec12710,        // TEC1-12710, 12 V / 10.5 A, Qmax 92 W
     // The parts a real board uses: a known logic-level MOSFET, a ceramic
     // (MLCC) capacitor with its ESL, and a power resistor with a power rating.
-    Irl540N,         // IRL540N: 100 V / 28 A / 44 mΩ logic-level N-MOSFET
     CeramicCap,      // MLCC: C + ESR + ESL (series RLC, what decoupling is)
     PowerResistor,   // wirewound / cement resistor: R + winding L + power rating
 };
