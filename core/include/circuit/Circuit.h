@@ -131,6 +131,10 @@ int pinCount(ComponentType type);
 // for kMaxComponentPins entries. Returns the number of pins written.
 int componentPins(const Component& component, Point out[kMaxComponentPins]);
 
+// Half extents of the symbol body in grid cells, with the rotation applied and
+// the legacy (twice as large) size taken into account.
+void componentBodyHalfExtents(const Component& component, int* halfWidth, int* halfHeight);
+
 // Axis-aligned bounds in grid units, with a small margin for the symbol body.
 void componentBounds(const Component& component, Point* minOut, Point* maxOut);
 

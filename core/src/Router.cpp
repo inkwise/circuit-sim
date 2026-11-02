@@ -70,12 +70,9 @@ void collectObstacles(const Circuit& circuit, Point start, Point end, Obstacles*
         for (int index = 0; index < count; ++index) {
             obstacles->pins.insert(pack(pins[index]));
         }
-        const PinLayout& layout = pinLayout(component.type);
-        const bool horizontal =
-            (((component.rotation % 360) + 360) % 360) == 90 ||
-            (((component.rotation % 360) + 360) % 360) == 270;
-        const int halfWidth = horizontal ? layout.bodyHalfHeight : layout.bodyHalfWidth;
-        const int halfHeight = horizontal ? layout.bodyHalfWidth : layout.bodyHalfHeight;
+        int halfWidth = 0;
+        int halfHeight = 0;
+        componentBodyHalfExtents(component, &halfWidth, &halfHeight);
         if (ownsEndpoint) {
             continue;  // the wire may leave through its own symbol
         }

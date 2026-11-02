@@ -2831,6 +2831,111 @@ void testLegacyProjectFileShrinks()
     check(compiled.ok, "the shrunk project still compiles: " + compiled.error);
 }
 
+
+// The symbol table is now central to hit testing, routing and the compact
+// layout, so check every part in every orientation.
+void testComponentGeometryTable()
+{
+    bool allDistinct = true;
+    bool allInsideBounds = true;
+    bool compactTwoPin = true;
+    bool labelsPresent = true;
+    for (ComponentType type : allComponentTypes()) {
+        const PinLayout& layout = pinLayout(type);
+        for (int rotation : {0, 90, 180, 270}) {
+            for (bool mirrored : {false, true}) {
+                Component component;
+                component.type = type;
+                component.gridX = 10;
+                component.gridY = 10;
+                component.rotation = rotation;
+                component.mirrored = mirrored;
+                Point pins[kMaxComponentPins];
+                const int count = componentPins(component, pins);
+                if (count != layout.count) {
+                    allDistinct = false;
+                }
+                for (int a = 0; a < count; ++a) {
+                    for (int b = a + 1; b < count; ++b) {
+                        if (pins[a] == pins[b]) {
+                            allDistinct = false;
+                        }
+                    }
+                }
+                Point boundsMin;
+                Point boundsMax;
+                componentBounds(component, &boundsMin, &boundsMax);
+                for (int pin = 0; pin < count; ++pin) {
+                    if (pins[pin].x < boundsMin.x || pins[pin].x > boundsMax.x ||
+                        pins[pin].y < boundsMin.y || pins[pin].y > boundsMax.y) {
+                        allInsideBounds = false;
+                    }
+                }
+                // Two-pin parts and the discrete transistors are the compact
+                // ones: every pin sits at most one cell from the centre. Logic
+                // gates keep a two-cell lead because their body carries a title.
+                const bool gate = type == ComponentType::GateAnd ||
+                                  type == ComponentType::GateOr ||
+                                  type == ComponentType::GateNot;
+                const bool compactPart =
+                    !gate && (count <= 2 || type == ComponentType::Npn ||
+                              type == ComponentType::Pnp ||
+                              type == ComponentType::Nmos ||
+                              type == ComponentType::PowerNmos ||
+                              type == ComponentType::PowerPmos);
+                if (compactPart) {
+                    for (int pin = 0; pin < count; ++pin) {
+                        if (std::abs(pins[pin].x - component.gridX) > 1 ||
+                            std::abs(pins[pin].y - component.gridY) > 1) {
+                            compactTwoPin = false;
+                        }
+                    }
+                }
+                for (int pin = 0; pin < count; ++pin) {
+                    const char* name = componentPinName(type, pin);
+                    if (!name || name[0] == '\0') {
+                        labelsPresent = false;
+                    }
+                }
+                int halfWidth = 0;
+                int halfHeight = 0;
+                componentBodyHalfExtents(component, &halfWidth, &halfHeight);
+                if (halfWidth > 4 || halfHeight > 4) {
+                    allInsideBounds = false;  // the symbol body is absurdly large
+                }
+            }
+        }
+    }
+    check(allDistinct, "every component has distinct pins in all orientations");
+    check(allInsideBounds, "component bounds cover the pins and stay compact");
+    check(compactTwoPin, "simple parts keep every pin one cell from the centre");
+    check(labelsPresent, "every pin has a name for the parameter card");
+
+    // A mirrored part keeps the pin count and the pin distance.
+    Component resistor;
+    resistor.type = ComponentType::Resistor;
+    resistor.gridX = 4;
+    resistor.gridY = 4;
+    Point before[kMaxComponentPins];
+    componentPins(resistor, before);
+    resistor.mirrored = true;
+    Point after[kMaxComponentPins];
+    componentPins(resistor, after);
+    check(before[0] == after[0] && before[1] == after[1],
+          "mirroring a symmetric two-pin part keeps its pins");
+
+    // A legacy part still reports the old, larger spacing.
+    Component legacy;
+    legacy.type = ComponentType::Resistor;
+    legacy.gridX = 4;
+    legacy.gridY = 4;
+    legacy.legacySymbol = true;
+    Point legacyPins[kMaxComponentPins];
+    componentPins(legacy, legacyPins);
+    check(std::abs(legacyPins[0].y - legacy.gridY) == 2,
+          "a legacy part keeps its two-cell pins");
+}
+
 }  // namespace
 
 int main()
@@ -2878,6 +2983,7 @@ int main()
     testComponentMirror();
     testLegacyGeometryShrink();
     testLegacyProjectFileShrinks();
+    testComponentGeometryTable();
 
     if (g_failures == 0) {
         std::printf("ALL TESTS PASSED\n");

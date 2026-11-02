@@ -497,17 +497,29 @@ bool shrinkLegacyGeometry(Circuit& circuit)
     return true;
 }
 
-void componentBounds(const Component& component, Point* minOut, Point* maxOut)
+void componentBodyHalfExtents(const Component& component, int* halfWidth, int* halfHeight)
 {
     const PinLayout& layout = pinLayout(component.type);
-
-    // AABB of the rotated symbol body. Rotating the body rectangle by 90°
-    // swaps its extents.
+    // A part saved before the symbols shrank keeps the old drawing, which is
+    // twice as large.
+    int halfW = layout.bodyHalfWidth * (component.legacySymbol ? 2 : 1);
+    int halfH = layout.bodyHalfHeight * (component.legacySymbol ? 2 : 1);
+    // Rotating the body rectangle by 90° swaps its extents.
     const bool horizontal =
         (((component.rotation % 360) + 360) % 360) == 90 ||
         (((component.rotation % 360) + 360) % 360) == 270;
-    const int bodyHalfW = horizontal ? layout.bodyHalfHeight : layout.bodyHalfWidth;
-    const int bodyHalfH = horizontal ? layout.bodyHalfWidth : layout.bodyHalfHeight;
+    if (horizontal) {
+        std::swap(halfW, halfH);
+    }
+    *halfWidth = halfW;
+    *halfHeight = halfH;
+}
+
+void componentBounds(const Component& component, Point* minOut, Point* maxOut)
+{
+    int bodyHalfW = 0;
+    int bodyHalfH = 0;
+    componentBodyHalfExtents(component, &bodyHalfW, &bodyHalfH);
     int minX = component.gridX - bodyHalfW;
     int maxX = component.gridX + bodyHalfW;
     int minY = component.gridY - bodyHalfH;

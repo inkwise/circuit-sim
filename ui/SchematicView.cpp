@@ -1112,12 +1112,15 @@ void App::drawComponent(ImDrawList* drawList, const Component& component, bool s
 
     if (selected && pinCount(component.type) > 2) {
         const PinLayout& layout = pinLayout(component.type);
+        Point placedPins[kMaxComponentPins];
+        const int placedCount = componentPins(component, placedPins);
         ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 0.78f);
-        for (int pin = 0; pin < layout.count; ++pin) {
-            const PinDef& definition = layout.pins[static_cast<size_t>(pin)];
-            const ImVec2 point = P(static_cast<float>(definition.x),
-                                   static_cast<float>(definition.y));
-            const ImVec2 textSize = ImGui::CalcTextSize(definition.name);
+        for (int pin = 0; pin < placedCount && pin < layout.count; ++pin) {
+            const char* name = layout.pins[static_cast<size_t>(pin)].name;
+            // The real pin position: a mirrored or legacy part has its pins
+            // somewhere the layout table alone does not tell.
+            const ImVec2 point = worldToScreen(placedPins[pin]);
+            const ImVec2 textSize = ImGui::CalcTextSize(name);
             const float dx = point.x - center.x;
             const float dy = point.y - center.y;
             ImVec2 textPos;
@@ -1130,7 +1133,7 @@ void App::drawComponent(ImDrawList* drawList, const Component& component, bool s
                                  dy >= 0.0f ? point.y + dp(2.0f)
                                             : point.y - textSize.y - dp(2.0f));
             }
-            drawList->AddText(textPos, Theme::accent(), definition.name);
+            drawList->AddText(textPos, Theme::accent(), name);
         }
         ImGui::PopFont();
     }
