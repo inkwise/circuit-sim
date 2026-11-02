@@ -113,6 +113,10 @@ struct Component {
     int gridX = 0;
     int gridY = 0;
     int rotation = 0;         // 0, 90, 180, 270
+    // Mirror the symbol around its vertical axis before rotating it. Rotation
+    // alone cannot put a transistor's base on the other side, or flip a diode
+    // that is already upside down.
+    bool mirrored = false;
 };
 
 struct Wire {
@@ -229,6 +233,9 @@ struct Circuit {
     bool moveComponent(int id, int newGridX, int newGridY);
     // Rotates 90 degrees and follows attached wire endpoints.
     bool rotateComponent(int id);
+    // Mirrors the symbol left-to-right (the rotation still applies on top) and
+    // moves attached wire endpoints with the pins.
+    bool mirrorComponent(int id);
 
     void touch() { ++revision; }
 

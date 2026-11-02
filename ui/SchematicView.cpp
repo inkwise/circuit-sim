@@ -81,7 +81,10 @@ ImVec2 App::screenToWorld(ImVec2 screen) const
 
 ImVec2 App::componentPoint(const Component& component, float localX, float localY) const
 {
-    const ImVec2 rotated = rotateVec(localX, localY, component.rotation);
+    // Mirror first, then rotate: the same order the pins use, so a flipped
+    // symbol's leads still end exactly on its pins.
+    const ImVec2 rotated =
+        rotateVec(component.mirrored ? -localX : localX, localY, component.rotation);
     return ImVec2(canvasOrigin_.x + viewOffset_.x +
                       (component.gridX + rotated.x) * gridPixels(),
                   canvasOrigin_.y + viewOffset_.y +
@@ -1212,9 +1215,11 @@ void App::handleCanvasTap(const ImVec2& mouse)
         }
         selectedComponent_ = id;
         selectedWire_ = -1;
+        const std::string placed = componentInfo(placement_.type).label;
+        // One pick places one part: no more "keep tapping" mode.
+        placement_ = Placement{};
         markChanged();
-        setStatus(std::string("已放置 ") + componentInfo(placement_.type).label +
-                  "，可继续点击画布");
+        setStatus("已放置 " + placed + "，点“+”可以再放一个");
         return;
     }
 

@@ -1438,18 +1438,29 @@ void App::drawSelectionCard()
         return;
     }
 
+    const float right = width - dp(12.0f) - buttonWidth * 3.0f - dp(14.0f);
+
     ImGui::SetCursorPos(ImVec2(dp(2.0f), dp(9.0f)));
     ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 1.05f);
     ImGui::TextUnformatted(component->name.c_str());
     ImGui::PopFont();
     ImGui::SameLine(0.0f, dp(8.0f));
-    ImGui::TextDisabled("%s", componentInfo(component->type).label);
+    // Clip the type label so it never runs under the rotate / mirror / delete
+    // buttons.
+    const float labelRoom = std::max(dp(20.0f), right - ImGui::GetCursorPosX() - dp(6.0f));
+    ImGui::TextDisabled("%s",
+                        clipText(componentInfo(component->type).label, labelRoom).c_str());
 
-    const float right = width - dp(12.0f) - buttonWidth * 2.0f - dp(7.0f);
     ImGui::SetCursorPos(ImVec2(std::max(dp(2.0f), right), dp(9.0f)));
     if (ImGui::Button("旋转", ImVec2(buttonWidth, buttonHeight))) {
         pushUndo();
         circuit_.rotateComponent(component->id);
+        markChanged();
+    }
+    ImGui::SameLine(0.0f, dp(7.0f));
+    if (ImGui::Button("翻转", ImVec2(buttonWidth, buttonHeight))) {
+        pushUndo();
+        circuit_.mirrorComponent(component->id);
         markChanged();
     }
     ImGui::SameLine(0.0f, dp(7.0f));

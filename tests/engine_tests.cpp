@@ -2419,9 +2419,13 @@ void testThermoelectricProjectRoundTrip()
     circuit.addWirePoints({Point{10, 13}, Point{10, 17}});
 
     // This fixture uses the old, twice-as-large pin spacing; the flag has to
-    // survive the round trip together with everything else.
+    // survive the round trip together with everything else. The cooler is
+    // mirrored so the flip flag is covered as well.
     for (auto& component : circuit.components) {
         component.legacySymbol = true;
+        if (component.type == ComponentType::Tec12710) {
+            component.mirrored = true;
+        }
     }
     const std::string path = directory + "/tec.ckt";
     check(saveProject(circuit, path, "制冷片", &error), "cooler project saves");
@@ -2436,7 +2440,8 @@ void testThermoelectricProjectRoundTrip()
     for (const auto& component : loaded.components) {
         if (component.type == ComponentType::Tec12710) {
             coolerOk = std::fabs(component.heatLoad - 12.5) < 1e-9 &&
-                       std::fabs(component.coldStart + 5.0) < 1e-9;
+                       std::fabs(component.coldStart + 5.0) < 1e-9 &&
+                       component.mirrored;
             specOk = std::fabs(loadRatedCurrent(component) - 10.5) < 1e-9 &&
                      std::fabs(loadRatedPower(component) - 92.0) < 1e-9;
         } else if (component.type == ComponentType::Bulb) {
@@ -2565,6 +2570,67 @@ void testWireRouter()
     }
 }
 
+
+// Mirroring is a second degree of freedom on top of rotation: a transistor can
+// put its base on either side, and the two combine in any order.
+void testComponentMirror()
+{
+    Circuit circuit;
+    const int transistor = circuit.addComponent(ComponentType::Npn, 10, 10);
+    Component* component = circuit.findComponent(transistor);
+    check(component != nullptr, "the transistor exists");
+    if (!component) {
+        return;
+    }
+    Point pins[kMaxComponentPins];
+    componentPins(*component, pins);
+    check(pins[0] == Point{11, 9} && pins[1] == Point{9, 10} && pins[2] == Point{11, 11},
+          "the transistor starts with its base on the left");
+
+    // Mirroring swaps the collector and emitter sides.
+    check(circuit.mirrorComponent(transistor), "the transistor mirrors");
+    componentPins(*circuit.findComponent(transistor), pins);
+    check(pins[0] == Point{9, 9}, "the mirrored collector moved to the left");
+    check(pins[1] == Point{11, 10}, "the mirrored base moved to the right");
+    check(pins[2] == Point{9, 11}, "the mirrored emitter moved to the left");
+
+    // Rotation still applies on top of the mirror.
+    check(circuit.rotateComponent(transistor), "the mirrored transistor rotates");
+    componentPins(*circuit.findComponent(transistor), pins);
+    check(pins[0] == Point{11, 9}, "mirror then rotate: collector at the top right");
+    check(pins[1] == Point{10, 11}, "mirror then rotate: base at the bottom");
+    check(pins[2] == Point{9, 9}, "mirror then rotate: emitter at the top left");
+
+    // Mirroring twice is the original part again.
+    Circuit twice;
+    const int other = twice.addComponent(ComponentType::Npn, 4, 4);
+    twice.mirrorComponent(other);
+    twice.mirrorComponent(other);
+    Point otherPins[kMaxComponentPins];
+    componentPins(*twice.findComponent(other), otherPins);
+    check(otherPins[0] == Point{5, 3} && otherPins[1] == Point{3, 4},
+          "mirroring twice restores the original symbol");
+
+    // Wires attached to the pins follow the flip instead of coming loose.
+    Circuit wired;
+    const int wiredTransistor = wired.addComponent(ComponentType::Npn, 10, 10);
+    wired.addComponent(ComponentType::Ground, 3, 13);
+    wired.addWirePoints({Point{9, 10}, Point{3, 10}, Point{3, 12}});
+    check(wired.mirrorComponent(wiredTransistor), "the wired transistor mirrors");
+    Point wiredPins[kMaxComponentPins];
+    componentPins(*wired.findComponent(wiredTransistor), wiredPins);
+    check(wiredPins[1] == Point{11, 10}, "the mirrored base is on the right");
+    bool moved = false;
+    for (const auto& wire : wired.wires) {
+        for (const auto& vertex : wire.points) {
+            if (vertex == wiredPins[1]) {
+                moved = true;
+            }
+        }
+    }
+    check(moved, "a wire that ended on the base follows the mirror");
+}
+
 }  // namespace
 
 int main()
@@ -2609,6 +2675,7 @@ int main()
     testLoadSpec();
     testThermoelectricProjectRoundTrip();
     testWireRouter();
+    testComponentMirror();
 
     if (g_failures == 0) {
         std::printf("ALL TESTS PASSED\n");

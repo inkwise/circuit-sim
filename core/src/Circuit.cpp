@@ -28,6 +28,13 @@ Point rotateLocal(int x, int y, int rotation)
     }
 }
 
+// Local symbol coordinates -> grid offsets: the mirror happens first, then the
+// rotation, so the two can be combined in any order the user likes.
+Point transformLocal(int x, int y, bool mirrored, int rotation)
+{
+    return rotateLocal(mirrored ? -x : x, y, rotation);
+}
+
 }  // namespace
 
 int pinCount(ComponentType type)
@@ -46,7 +53,8 @@ int componentPins(const Component& component, Point out[kMaxComponentPins])
         if (legacyPinOffsets(component.type, legacy, &legacyCount)) {
             const int count = std::min(legacyCount, kMaxComponentPins);
             for (int i = 0; i < count; ++i) {
-                const Point rotated = rotateLocal(legacy[i].x, legacy[i].y, component.rotation);
+                const Point rotated = transformLocal(legacy[i].x, legacy[i].y,
+                                                     component.mirrored, component.rotation);
                 out[i] = Point{component.gridX + rotated.x, component.gridY + rotated.y};
             }
             return count;
@@ -56,7 +64,8 @@ int componentPins(const Component& component, Point out[kMaxComponentPins])
     const int count = std::min(layout.count, kMaxComponentPins);
     for (int i = 0; i < count; ++i) {
         const PinDef& pin = layout.pins[static_cast<size_t>(i)];
-        const Point rotated = rotateLocal(pin.x, pin.y, component.rotation);
+        const Point rotated =
+            transformLocal(pin.x, pin.y, component.mirrored, component.rotation);
         out[i] = Point{component.gridX + rotated.x, component.gridY + rotated.y};
     }
     return count;
@@ -160,8 +169,8 @@ void migrateLegacyPinSpacing(Circuit& circuit)
             Point current[kMaxComponentPins];
             const int count = componentPins(component, current);
             for (int pin = 0; pin < std::min(count, legacyCount); ++pin) {
-                const Point rotated =
-                    rotateLocal(legacy[pin].x, legacy[pin].y, component.rotation);
+                const Point rotated = transformLocal(legacy[pin].x, legacy[pin].y,
+                                                     component.mirrored, component.rotation);
                 const Point previous{component.gridX + rotated.x,
                                      component.gridY + rotated.y};
                 if (previous == current[pin]) {
@@ -912,6 +921,25 @@ bool Circuit::rotateComponent(int id)
     const int oldCount = componentPins(*component, oldPins);
 
     component->rotation = (component->rotation + 90) % 360;
+
+    Point newPins[kMaxComponentPins];
+    const int newCount = componentPins(*component, newPins);
+    followPins(id, oldPins, oldCount, newPins, newCount);
+    touch();
+    return true;
+}
+
+bool Circuit::mirrorComponent(int id)
+{
+    Component* component = findComponent(id);
+    if (!component) {
+        return false;
+    }
+
+    Point oldPins[kMaxComponentPins];
+    const int oldCount = componentPins(*component, oldPins);
+
+    component->mirrored = !component->mirrored;
 
     Point newPins[kMaxComponentPins];
     const int newCount = componentPins(*component, newPins);
