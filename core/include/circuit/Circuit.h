@@ -201,9 +201,19 @@ Point snapPoint(float x, float y);
 
 // The bundled example circuits are written in the old, twice-as-large layout.
 // This maps their wire endpoints onto the current (half-size) pin positions and
-// re-routes them, so the shipped examples use the compact symbols. Project
-// files do not need it: saved parts carry `legacySymbol` instead.
+// re-routes them, so the shipped examples use the compact symbols.
 void migrateLegacyPinSpacing(Circuit& circuit);
+
+// Projects saved before the symbols shrank are shrunk here: the wiring is
+// migrated and then checked, and only when every pin stays on the same net does
+// the circuit keep the compact size. Returns true when the circuit was shrunk;
+// false means the caller should fall back to `legacySymbol` (same circuit, old
+// pin spacing) so nothing comes loose.
+bool shrinkLegacyGeometry(Circuit& circuit);
+
+// True when both circuits connect the same pins to each other (used to validate
+// a geometry migration).
+bool sameConnectivity(const Circuit& before, const Circuit& after);
 
 struct Circuit {
     std::vector<Component> components;

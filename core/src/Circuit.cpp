@@ -1,5 +1,6 @@
 #include "circuit/Circuit.h"
 
+#include "circuit/Netlist.h"
 #include "circuit/Router.h"
 #include "circuit/Thermoelectric.h"
 
@@ -7,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <set>
 #include <string>
 
@@ -136,10 +138,11 @@ static bool legacyPinOffsets(ComponentType type, Point* out, int* count)
 
 void migrateLegacyPinSpacing(Circuit& circuit)
 {
-    // Wires keep their endpoints where they touched a pin, but the pins have
-    // moved: those endpoints are moved onto the new pins, and a wire whose
-    // route changed is routed again afterwards (a plain corner could land on
-    // another part's pin and silently join two nets).
+    // Parts used to be drawn twice as large, so their pins sat one cell further
+    // out. Moving the symbols inward leaves the wires behind, so the wires are
+    // repaired here: every wire that touched a pin is re-routed onto the new pin
+    // positions, joints between wires follow, and pins that used to touch
+    // another pin or a wire are reconnected with a short stub.
     const auto pointOnSegment = [](Point point, Point a, Point b) {
         const long long cross = static_cast<long long>(point.x - a.x) * (b.y - a.y) -
                                 static_cast<long long>(point.y - a.y) * (b.x - a.x);
@@ -149,6 +152,57 @@ void migrateLegacyPinSpacing(Circuit& circuit)
         return point.x >= std::min(a.x, b.x) && point.x <= std::max(a.x, b.x) &&
                point.y >= std::min(a.y, b.y) && point.y <= std::max(a.y, b.y);
     };
+    const auto nearestOnPolyline = [](Point point, const std::vector<Point>& path) {
+        Point best = path.empty() ? point : path.front();
+        long long bestDistance = -1;
+        for (size_t index = 0; index + 1 < path.size(); ++index) {
+            const Point a = path[index];
+            const Point b = path[index + 1];
+            const int steps = std::abs(b.x - a.x) + std::abs(b.y - a.y);
+            const int stepX = (b.x > a.x) - (b.x < a.x);
+            const int stepY = (b.y > a.y) - (b.y < a.y);
+            for (int step = 0; step <= steps; ++step) {
+                const Point candidate{a.x + stepX * step, a.y + stepY * step};
+                const long long dx = candidate.x - point.x;
+                const long long dy = candidate.y - point.y;
+                const long long distance = dx * dx + dy * dy;
+                if (bestDistance < 0 || distance < bestDistance) {
+                    bestDistance = distance;
+                    best = candidate;
+                }
+            }
+        }
+        return best;
+    };
+
+    // Every pin's old and new position.
+    struct PinMove {
+        Point was;
+        Point now;
+        bool joined = false;  // a wire vertex was already moved onto it
+    };
+    std::vector<PinMove> pinMoves;
+    for (const auto& component : circuit.components) {
+        Point current[kMaxComponentPins];
+        const int count = componentPins(component, current);
+        Point legacy[kMaxComponentPins];
+        int legacyCount = 0;
+        const bool haveLegacy = legacyPinOffsets(component.type, legacy, &legacyCount);
+        for (int pin = 0; pin < count; ++pin) {
+            Point was = current[pin];
+            if (haveLegacy && pin < legacyCount) {
+                const Point rotated = transformLocal(legacy[pin].x, legacy[pin].y,
+                                                     component.mirrored, component.rotation);
+                was = Point{component.gridX + rotated.x, component.gridY + rotated.y};
+            }
+            if (was != current[pin]) {
+                pinMoves.push_back(PinMove{was, current[pin], false});
+            }
+        }
+    }
+    if (pinMoves.empty()) {
+        return;
+    }
 
     std::vector<std::vector<Point>> before;
     before.reserve(circuit.wires.size());
@@ -156,31 +210,16 @@ void migrateLegacyPinSpacing(Circuit& circuit)
         before.push_back(wire.points);
     }
 
-    // Pass 1: wire vertices that sat on an old pin move onto the new pin.
+    // Pass 1: a wire endpoint that sat on an old pin moves onto the new pin.
     std::vector<std::vector<Point>> after = before;
     std::vector<bool> changed(before.size(), false);
     for (size_t index = 0; index < after.size(); ++index) {
-        for (const auto& component : circuit.components) {
-            Point legacy[kMaxComponentPins];
-            int legacyCount = 0;
-            if (!legacyPinOffsets(component.type, legacy, &legacyCount)) {
-                continue;
-            }
-            Point current[kMaxComponentPins];
-            const int count = componentPins(component, current);
-            for (int pin = 0; pin < std::min(count, legacyCount); ++pin) {
-                const Point rotated = transformLocal(legacy[pin].x, legacy[pin].y,
-                                                     component.mirrored, component.rotation);
-                const Point previous{component.gridX + rotated.x,
-                                     component.gridY + rotated.y};
-                if (previous == current[pin]) {
-                    continue;
-                }
-                for (Point& vertex : after[index]) {
-                    if (vertex == previous) {
-                        vertex = current[pin];
-                        changed[index] = true;
-                    }
+        for (PinMove& move : pinMoves) {
+            for (Point& vertex : after[index]) {
+                if (vertex == move.was) {
+                    vertex = move.now;
+                    changed[index] = true;
+                    move.joined = true;
                 }
             }
         }
@@ -219,17 +258,13 @@ void migrateLegacyPinSpacing(Circuit& circuit)
     if (!movedSegments.empty()) {
         for (size_t index = 0; index < after.size(); ++index) {
             for (Point& vertex : after[index]) {
-                bool attachedToPin = false;
-                for (const auto& component : circuit.components) {
-                    Point pins[kMaxComponentPins];
-                    const int count = componentPins(component, pins);
-                    for (int pin = 0; pin < count; ++pin) {
-                        if (pins[pin] == vertex) {
-                            attachedToPin = true;
-                        }
+                bool isPin = false;
+                for (const PinMove& move : pinMoves) {
+                    if (vertex == move.now) {
+                        isPin = true;
                     }
                 }
-                if (attachedToPin) {
+                if (isPin) {
                     continue;
                 }
                 for (const MovedSegment& segment : movedSegments) {
@@ -244,35 +279,113 @@ void migrateLegacyPinSpacing(Circuit& circuit)
         }
     }
 
+    // Rebuild the wire list: unchanged wires stay, changed ones are routed again
+    // between their moved endpoints. Remember every wire's old and new shape so
+    // pins that used to tap into a wire can find it again.
+    struct WireShape {
+        std::vector<Point> was;
+        std::vector<Point> now;
+    };
+    std::vector<WireShape> shapes;
     std::vector<Wire> kept;
-    std::vector<Wire> movedWires;
+    std::vector<std::pair<size_t, Wire>> rerouted;
     for (size_t index = 0; index < circuit.wires.size(); ++index) {
-        Wire wire = circuit.wires[index];
         if (!changed[index]) {
-            kept.push_back(wire);
+            kept.push_back(circuit.wires[index]);
+            shapes.push_back(WireShape{before[index], before[index]});
             continue;
         }
+        Wire wire = circuit.wires[index];
         wire.points = after[index];
-        movedWires.push_back(std::move(wire));
+        rerouted.emplace_back(index, std::move(wire));
     }
-    if (movedWires.empty()) {
-        return;
-    }
-
     circuit.wires = std::move(kept);
-    for (const Wire& wire : movedWires) {
+    for (const auto& entry : rerouted) {
+        const Wire& wire = entry.second;
         const Point start = wire.points.front();
         const Point end = wire.points.back();
         std::vector<Point> route;
         if (!routeWire(circuit, start, end, &route)) {
             route = lShapedRoute(start, end);
         }
-        circuit.addWirePoints(std::move(route));
+        circuit.addWirePoints(route);
+        if (!circuit.wires.empty()) {
+            shapes.push_back(WireShape{before[entry.first], circuit.wires.back().points});
+        }
     }
 
-    // Two pins that touched each other were a connection (a ground symbol
-    // dropped straight onto a pin, two parts sharing a pin). The smaller
-    // symbols no longer reach, so join their new positions with a short wire.
+    // A short stub from a pin to somewhere it used to be attached.
+    const auto connect = [&](Point from, Point to) {
+        if (from == to) {
+            return;
+        }
+        std::vector<Point> route;
+        if (!routeWire(circuit, from, to, &route)) {
+            route = lShapedRoute(from, to);
+        }
+        circuit.addWirePoints(std::move(route));
+    };
+
+    // Pass 3a: a wire endpoint that tapped into another wire has to follow it
+    // too, because that other wire may have been routed somewhere else entirely.
+    const auto onPolyline = [&](Point point, const std::vector<Point>& path) {
+        for (size_t index = 0; index + 1 < path.size(); ++index) {
+            if (pointOnSegment(point, path[index], path[index + 1])) {
+                return true;
+            }
+        }
+        return false;
+    };
+    {
+        std::vector<Point> taps;
+        for (const auto& wire : circuit.wires) {
+            for (const Point& vertex : wire.points) {
+                bool isPin = false;
+                for (const PinMove& move : pinMoves) {
+                    if (vertex == move.now || vertex == move.was) {
+                        isPin = true;
+                    }
+                }
+                if (isPin) {
+                    continue;
+                }
+                taps.push_back(vertex);
+            }
+        }
+        for (const WireShape& shape : shapes) {
+            if (shape.was == shape.now) {
+                continue;
+            }
+            for (const Point& tap : taps) {
+                if (!onPolyline(tap, shape.was) || onPolyline(tap, shape.now)) {
+                    continue;
+                }
+                connect(tap, nearestOnPolyline(tap, shape.now));
+            }
+        }
+    }
+
+    // Pass 3b: a pin that used to sit on a wire (a T from the side) is reconnected
+    // to that same wire, now that the wire may have moved.
+    for (const PinMove& move : pinMoves) {
+        if (move.joined) {
+            continue;  // pass 1 already moved the wire endpoint onto the pin
+        }
+        for (const WireShape& shape : shapes) {
+            bool onPath = false;
+            for (size_t index = 0; index + 1 < shape.was.size() && !onPath; ++index) {
+                onPath = pointOnSegment(move.was, shape.was[index], shape.was[index + 1]);
+            }
+            if (!onPath) {
+                continue;
+            }
+            connect(move.now, nearestOnPolyline(move.was, shape.now));
+            break;
+        }
+    }
+
+    // Pass 4: two pins that touched each other were a connection too (a ground
+    // symbol dropped straight onto a pin). Join their new positions.
     struct TouchingPins {
         Point was;
         std::vector<Point> now;
@@ -287,8 +400,8 @@ void migrateLegacyPinSpacing(Circuit& circuit)
         for (int pin = 0; pin < count; ++pin) {
             Point was = current[pin];
             if (haveLegacy && pin < legacyCount) {
-                const Point rotated =
-                    rotateLocal(legacy[pin].x, legacy[pin].y, component.rotation);
+                const Point rotated = transformLocal(legacy[pin].x, legacy[pin].y,
+                                                     component.mirrored, component.rotation);
                 was = Point{component.gridX + rotated.x, component.gridY + rotated.y};
             }
             auto found = std::find_if(groups.begin(), groups.end(),
@@ -304,17 +417,84 @@ void migrateLegacyPinSpacing(Circuit& circuit)
     }
     for (const TouchingPins& group : groups) {
         for (size_t index = 1; index < group.now.size(); ++index) {
-            if (group.now[index] == group.now[0]) {
-                continue;
+            if (group.now[index] != group.now[0]) {
+                connect(group.now[0], group.now[index]);
             }
-            std::vector<Point> route;
-            if (!routeWire(circuit, group.now[0], group.now[index], &route)) {
-                route = lShapedRoute(group.now[0], group.now[index]);
-            }
-            circuit.addWirePoints(std::move(route));
         }
     }
+
     circuit.touch();
+}
+
+bool sameConnectivity(const Circuit& before, const Circuit& after)
+{
+    const CompiledCircuit was = compileCircuit(before);
+    const CompiledCircuit now = compileCircuit(after);
+    if (!was.ok || !now.ok) {
+        return false;
+    }
+    // "<component name>:<pin>" -> node number, for both circuits.
+    std::map<std::string, int> wasNodes;
+    std::map<std::string, int> nowNodes;
+    for (const auto& component : before.components) {
+        const auto found = was.nodes.find(component.id);
+        if (found == was.nodes.end()) {
+            continue;
+        }
+        for (int pin = 0; pin < found->second.count; ++pin) {
+            wasNodes[component.name + ":" + std::to_string(pin)] =
+                found->second.pins[static_cast<size_t>(pin)];
+        }
+    }
+    for (const auto& component : after.components) {
+        const auto found = now.nodes.find(component.id);
+        if (found == now.nodes.end()) {
+            continue;
+        }
+        for (int pin = 0; pin < found->second.count; ++pin) {
+            nowNodes[component.name + ":" + std::to_string(pin)] =
+                found->second.pins[static_cast<size_t>(pin)];
+        }
+    }
+    if (wasNodes.size() != nowNodes.size()) {
+        return false;
+    }
+    // The partition has to match exactly: two pins share a net in one circuit
+    // if and only if they share it in the other.
+    for (const auto& entry : wasNodes) {
+        const auto other = nowNodes.find(entry.first);
+        if (other == nowNodes.end()) {
+            return false;
+        }
+        for (const auto& compare : wasNodes) {
+            const auto compareNow = nowNodes.find(compare.first);
+            if (compareNow == nowNodes.end()) {
+                return false;
+            }
+            const bool sameBefore = compare.second == entry.second;
+            const bool sameAfter = compareNow->second == other->second;
+            if (sameBefore != sameAfter) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool shrinkLegacyGeometry(Circuit& circuit)
+{
+    // What the old project actually was: same parts, old (large) pin spacing.
+    Circuit legacyView = circuit;
+    for (auto& component : legacyView.components) {
+        component.legacySymbol = true;
+    }
+    Circuit shrunk = circuit;
+    migrateLegacyPinSpacing(shrunk);
+    if (!sameConnectivity(legacyView, shrunk)) {
+        return false;
+    }
+    circuit = std::move(shrunk);
+    return true;
 }
 
 void componentBounds(const Component& component, Point* minOut, Point* maxOut)

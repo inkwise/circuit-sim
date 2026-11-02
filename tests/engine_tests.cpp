@@ -17,6 +17,8 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <fstream>
+#include <sstream>
 #include <cstdlib>
 #include <map>
 #include <string>
@@ -2631,6 +2633,204 @@ void testComponentMirror()
     check(moved, "a wire that ended on the base follows the mirror");
 }
 
+
+// Old projects were laid out with twice-as-large symbols. Shrinking them has to
+// keep every pin on the same net - the app falls back to the old geometry when
+// it cannot, but the common patterns must migrate cleanly.
+void testLegacyGeometryShrink()
+{
+    struct Case {
+        const char* name;
+        Circuit circuit;
+    };
+    std::vector<Case> cases;
+
+    {
+        // Divider: two-pin parts chained with wires.
+        Circuit circuit;
+        circuit.addComponent(ComponentType::VoltageSource, 8, 10);
+        circuit.addComponent(ComponentType::Resistor, 16, 8);
+        circuit.addComponent(ComponentType::Resistor, 16, 14);
+        circuit.addComponent(ComponentType::Ground, 8, 17);
+        circuit.addWirePoints({Point{8, 8}, Point{16, 8}, Point{16, 6}});
+        circuit.addWirePoints({Point{16, 10}, Point{16, 12}});
+        circuit.addWirePoints({Point{8, 12}, Point{8, 16}});
+        circuit.addWirePoints({Point{16, 16}, Point{8, 16}});
+        cases.push_back(Case{"divider", std::move(circuit)});
+    }
+    {
+        // Transistor switch with a ground symbol dropped straight onto the
+        // emitter pin (they touched without a wire).
+        Circuit circuit;
+        circuit.addComponent(ComponentType::VoltageSource, 4, 10);
+        circuit.addComponent(ComponentType::Resistor, 8, 6);
+        circuit.addComponent(ComponentType::Resistor, 18, 6);
+        circuit.addComponent(ComponentType::Npn, 10, 10);
+        circuit.addComponent(ComponentType::Ground, 12, 13);
+        circuit.addWirePoints({Point{4, 8}, Point{4, 4}});
+        circuit.addWirePoints({Point{4, 4}, Point{18, 4}});
+        circuit.addWirePoints({Point{8, 8}, Point{8, 10}});
+        circuit.addWirePoints({Point{18, 8}, Point{12, 8}});
+        circuit.addWirePoints({Point{4, 12}, Point{12, 12}});
+        cases.push_back(Case{"transistor with touching ground", std::move(circuit)});
+    }
+    {
+        // A part tapping into the middle of a rail: the pin sits on the wire but
+        // not on any of its corners.
+        Circuit circuit;
+        circuit.addComponent(ComponentType::VoltageSource, 4, 10);
+        circuit.addComponent(ComponentType::Resistor, 12, 4);
+        circuit.addComponent(ComponentType::Ground, 4, 16);
+        circuit.addWirePoints({Point{4, 8}, Point{4, 4}, Point{20, 4}});
+        circuit.addWirePoints({Point{4, 12}, Point{4, 15}});
+        cases.push_back(Case{"tap into a rail", std::move(circuit)});
+    }
+    {
+        // Logic gate with its inputs wired from a common node.
+        Circuit circuit;
+        circuit.addComponent(ComponentType::VoltageSource, 2, 10);
+        circuit.addComponent(ComponentType::GateAnd, 10, 10);
+        circuit.addComponent(ComponentType::Resistor, 16, 10);
+        circuit.addComponent(ComponentType::Ground, 2, 13);
+        circuit.addComponent(ComponentType::Ground, 18, 11);
+        circuit.addWirePoints({Point{2, 8}, Point{4, 8}});
+        circuit.addWirePoints({Point{4, 8}, Point{7, 8}});
+        circuit.addWirePoints({Point{7, 8}, Point{7, 9}});
+        circuit.addWirePoints({Point{4, 8}, Point{4, 11}});
+        circuit.addWirePoints({Point{4, 11}, Point{7, 11}});
+        circuit.addWirePoints({Point{13, 10}, Point{14, 10}});
+        cases.push_back(Case{"logic gate", std::move(circuit)});
+    }
+    {
+        // Rails with a T junction and a wire that hops across both of them.
+        Circuit circuit;
+        circuit.addComponent(ComponentType::VoltageSource, 4, 10);
+        circuit.addComponent(ComponentType::Resistor, 20, 10);
+        circuit.addComponent(ComponentType::Ground, 10, 17);
+        circuit.addWirePoints({Point{4, 8}, Point{4, 6}, Point{20, 6}, Point{20, 8}});
+        circuit.addWirePoints({Point{4, 12}, Point{4, 14}, Point{20, 14}, Point{20, 12}});
+        circuit.addWirePoints({Point{10, 14}, Point{10, 16}});
+        circuit.addWirePoints({Point{16, 4}, Point{16, 18}});
+        cases.push_back(Case{"crossing wires", std::move(circuit)});
+    }
+
+    for (Case& item : cases) {
+        Circuit legacy = item.circuit;
+        const bool shrunk = shrinkLegacyGeometry(legacy);
+        const std::string label = item.name;
+        std::printf("legacy shrink \"%s\" -> %s\n", item.name, shrunk ? "shrunk" : "kept large");
+        check(shrunk, label + " shrinks instead of falling back");
+        if (!shrunk) {
+            continue;
+        }
+        Circuit legacyView = item.circuit;
+        for (auto& component : legacyView.components) {
+            component.legacySymbol = true;
+        }
+        check(sameConnectivity(legacyView, legacy),
+              label + " keeps every pin on the same net");
+        // The parts really are the compact ones now.
+        bool small = true;
+        for (const auto& component : legacy.components) {
+            if (component.legacySymbol) {
+                small = false;
+            }
+        }
+        check(small, label + " ends up with compact symbols");
+        Point pins[kMaxComponentPins];
+        for (const auto& component : legacy.components) {
+            if (component.type == ComponentType::Resistor) {
+                const int count = componentPins(component, pins);
+                if (count == 2 &&
+                    (std::abs(pins[0].y - component.gridY) != 1 ||
+                     std::abs(pins[1].y - component.gridY) != 1)) {
+                    small = false;
+                }
+            }
+        }
+        check(small, label + " puts the resistor pins one cell out");
+    }
+
+    // The safety net: a shrunk circuit that lost a connection is detected, so
+    // the loader keeps the old geometry instead of quietly breaking the project.
+    Circuit broken = cases.front().circuit;
+    Circuit brokenView = broken;
+    for (auto& component : brokenView.components) {
+        component.legacySymbol = true;
+    }
+    check(sameConnectivity(brokenView, brokenView),
+          "the connectivity check is reflexive");
+    if (!broken.wires.empty()) {
+        broken.wires.erase(broken.wires.begin());
+        check(!sameConnectivity(brokenView, broken),
+              "a missing wire is caught by the connectivity check");
+    }
+}
+
+
+// End to end: a version-1 project file (old, twice-as-large layout) must load
+// with the compact symbols and the very same wiring.
+void testLegacyProjectFileShrinks()
+{
+    const std::string directory = "./circuitlab_legacy_projects";
+    std::string error;
+    check(ensureProjectDirectory(directory, &error), "legacy project dir");
+
+    Circuit circuit;
+    circuit.addComponent(ComponentType::VoltageSource, 8, 10);
+    circuit.addComponent(ComponentType::Resistor, 16, 8);
+    circuit.addComponent(ComponentType::Resistor, 16, 14);
+    circuit.addComponent(ComponentType::Ground, 8, 17);
+    circuit.addWirePoints({Point{8, 8}, Point{16, 8}, Point{16, 6}});
+    circuit.addWirePoints({Point{16, 10}, Point{16, 12}});
+    circuit.addWirePoints({Point{8, 12}, Point{8, 16}});
+    circuit.addWirePoints({Point{16, 16}, Point{8, 16}});
+
+    Circuit legacyView = circuit;
+    for (auto& component : legacyView.components) {
+        component.legacySymbol = true;
+    }
+
+    const std::string path = directory + "/legacy.ckt";
+    check(saveProject(circuit, path, "旧工程", &error), "legacy project saves");
+    // Rewrite the header so the file looks like one written by the old build.
+    {
+        std::ifstream input(path, std::ios::binary);
+        std::stringstream buffer;
+        buffer << input.rdbuf();
+        input.close();
+        std::string text = buffer.str();
+        const size_t newline = text.find('\n');
+        if (newline != std::string::npos) {
+            text = std::string("CIRCUITLAB 1") + text.substr(newline);
+        }
+        std::ofstream output(path, std::ios::binary | std::ios::trunc);
+        output << text;
+    }
+
+    Circuit loaded;
+    check(loadProject(path, &loaded, &error), "legacy project loads");
+    bool anyLegacy = false;
+    for (const auto& component : loaded.components) {
+        if (component.legacySymbol) {
+            anyLegacy = true;
+        }
+    }
+    check(!anyLegacy, "a version-1 project is shrunk on load");
+    check(sameConnectivity(legacyView, loaded),
+          "the shrunk project keeps the original wiring");
+    Point pins[kMaxComponentPins];
+    for (const auto& component : loaded.components) {
+        if (component.type == ComponentType::Resistor) {
+            componentPins(component, pins);
+            check(std::abs(pins[0].y - component.gridY) == 1,
+                  "the loaded resistor sits on the compact pins");
+        }
+    }
+    const CompiledCircuit compiled = compileCircuit(loaded);
+    check(compiled.ok, "the shrunk project still compiles: " + compiled.error);
+}
+
 }  // namespace
 
 int main()
@@ -2676,6 +2876,8 @@ int main()
     testThermoelectricProjectRoundTrip();
     testWireRouter();
     testComponentMirror();
+    testLegacyGeometryShrink();
+    testLegacyProjectFileShrinks();
 
     if (g_failures == 0) {
         std::printf("ALL TESTS PASSED\n");

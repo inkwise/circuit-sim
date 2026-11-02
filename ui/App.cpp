@@ -424,6 +424,20 @@ bool App::openProject(const std::string& path)
     }
 
     circuit_ = std::move(loaded);
+    // Old projects are shrunk on load; when that would change the wiring the
+    // project keeps its original (large) symbols, so say so instead of silently
+    // looking unchanged.
+    bool keptLarge = false;
+    for (const auto& component : circuit_.components) {
+        if (component.legacySymbol) {
+            keptLarge = true;
+            break;
+        }
+    }
+    if (keptLarge) {
+        toast_ = "旧工程保持原尺寸（自动缩小会改变接线），新建工程即可用缩小版元件";
+        toastAt_ = SDL_GetTicks();
+    }
     currentProjectPath_ = path;
     currentProjectName_ = name;
     currentProjectIsExample_ = isExampleProjectName(name);

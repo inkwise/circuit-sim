@@ -1,5 +1,7 @@
 #include "circuit/ProjectIO.h"
 
+#include "circuit/Netlist.h"
+
 #include <algorithm>
 #include <cerrno>
 #include <cstdio>
@@ -155,6 +157,7 @@ bool readNameOnly(const std::string& path, std::string* name)
     }
     return true;
 }
+
 
 std::string stemOf(const std::string& filename)
 {
@@ -318,11 +321,7 @@ bool loadProject(const std::string& path, Circuit* circuit, std::string* name,
                     }
                 }
             }
-            if (legacyGeometry) {
-                // Parts saved by version 1 were drawn twice as large; keep their
-                // pin spacing so their wires still line up.
-                component.legacySymbol = true;
-            }
+
             applyLoadDefaults(component);
             if (isLoadType(component.type) && component.ratedVoltage <= 0.0) {
                 component.ratedVoltage =
@@ -360,6 +359,17 @@ bool loadProject(const std::string& path, Circuit* circuit, std::string* name,
         }
     }
 
+    if (legacyGeometry) {
+        // Version 1 projects were laid out with twice-as-large symbols. Shrink
+        // them the same way the bundled examples are shrunk, but only when the
+        // wiring survives untouched: if anything would come loose, keep the old
+        // pin spacing instead so the circuit keeps working.
+        if (!shrinkLegacyGeometry(loaded)) {
+            for (auto& component : loaded.components) {
+                component.legacySymbol = true;
+            }
+        }
+    }
     loaded.nextComponentId = maxComponentId + 1;
     loaded.nextWireId = maxWireId + 1;
     loaded.revision = 1;
