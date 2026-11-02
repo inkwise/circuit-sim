@@ -50,7 +50,7 @@ bool writeProject(const Circuit& circuit, const std::string& path, const std::st
         return false;
     }
 
-    output << "CIRCUITLAB 1\n";
+    output << "CIRCUITLAB 2\n";
     const std::string title = cleanName(name);
     if (!title.empty()) {
         output << "NAME " << title << '\n';
@@ -84,7 +84,8 @@ bool writeProject(const Circuit& circuit, const std::string& path, const std::st
                << component.ratedCurrent << ' '
                << component.ratedPower << ' '
                << component.heatLoad << ' '
-               << component.coldStart << '\n';
+               << component.coldStart << ' '
+               << (component.legacySymbol ? 1 : 0) << '\n';
     }
     for (const auto& wire : circuit.wires) {
         output << "WIRE " << wire.id << ' ' << wire.points.size();
@@ -128,7 +129,7 @@ bool readNameOnly(const std::string& path, std::string* name)
     if (!line.empty() && line.back() == '\r') {
         line.pop_back();
     }
-    if (line != "CIRCUITLAB 1") {
+    if (line != "CIRCUITLAB 1" && line != "CIRCUITLAB 2") {
         return false;
     }
     while (std::getline(input, line)) {
@@ -191,7 +192,10 @@ bool loadProject(const std::string& path, Circuit* circuit, std::string* name,
     if (!header.empty() && header.back() == '\r') {
         header.pop_back();
     }
-    if (header != "CIRCUITLAB 1") {
+    // Version 1 was written when a two-pin part was twice as tall; its wire
+    // coordinates are migrated onto the current pin positions below.
+    const bool legacyGeometry = header == "CIRCUITLAB 1";
+    if (header != "CIRCUITLAB 1" && header != "CIRCUITLAB 2") {
         if (error) {
             *error = "工程文件版本不受支持。";
         }
@@ -304,6 +308,15 @@ bool loadProject(const std::string& path, Circuit* circuit, std::string* name,
                 if (stream >> coldStart) {
                     component.coldStart = coldStart;
                 }
+                int legacySymbol = 0;
+                if (stream >> legacySymbol) {
+                    component.legacySymbol = legacySymbol != 0;
+                }
+            }
+            if (legacyGeometry) {
+                // Parts saved by version 1 were drawn twice as large; keep their
+                // pin spacing so their wires still line up.
+                component.legacySymbol = true;
             }
             applyLoadDefaults(component);
             if (isLoadType(component.type) && component.ratedVoltage <= 0.0) {

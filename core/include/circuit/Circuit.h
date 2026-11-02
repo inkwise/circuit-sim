@@ -103,6 +103,10 @@ struct Component {
     // face temperature at the start of the transient (degC).
     double heatLoad = 0.0;
     double coldStart = 20.0;
+    // Parts placed before the symbols shrank keep the old, twice-as-large pin
+    // spacing, so the wires that were drawn around them still line up. Any part
+    // placed now is drawn and wired at the compact size.
+    bool legacySymbol = false;
     // Series resistance of a real part: winding resistance of a power inductor
     // (DCR) or the ESR of an electrolytic capacitor. 0 means ideal.
     double seriesR = 0.0;
@@ -190,6 +194,12 @@ double componentResistance(const Component& component);
 
 // Round a world coordinate to the nearest grid point.
 Point snapPoint(float x, float y);
+
+// The bundled example circuits are written in the old, twice-as-large layout.
+// This maps their wire endpoints onto the current (half-size) pin positions and
+// re-routes them, so the shipped examples use the compact symbols. Project
+// files do not need it: saved parts carry `legacySymbol` instead.
+void migrateLegacyPinSpacing(Circuit& circuit);
 
 struct Circuit {
     std::vector<Component> components;

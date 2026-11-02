@@ -3,6 +3,8 @@
 #include "Symbols.h"
 #include "Theme.h"
 
+#include "circuit/Router.h"
+
 #include "circuit/Engineering.h"
 
 #include <algorithm>
@@ -39,17 +41,6 @@ float pointSegmentDistance(const ImVec2& p, const ImVec2& a, const ImVec2& b)
     float t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / lengthSquared;
     t = std::clamp(t, 0.0f, 1.0f);
     return std::hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
-}
-
-std::vector<Point> lShape(Point start, Point end)
-{
-    std::vector<Point> points;
-    points.push_back(start);
-    if (start.x != end.x && start.y != end.y) {
-        points.push_back(Point{end.x, start.y});
-    }
-    points.push_back(end);
-    return points;
 }
 
 const ImU32 kCurrentColor = IM_COL32(94, 196, 255, 255);
@@ -202,41 +193,36 @@ int App::hitWire(ImVec2 screen) const
     return -1;
 }
 
-bool App::nearestConnection(ImVec2 screen, Point* point) const
+bool App::hoveredConnectionTarget(ImVec2 screen, Point* point) const
 {
-    const float threshold = 30.0f * uiScale_;
-    float bestDistance = threshold;
-    bool found = false;
-    Point best;
+    if (!point) {
+        return false;
+    }
+    const float grid = gridPixels();
+    if (!(grid > 0.0f)) {
+        return false;
+    }
+    // The snap radius is a couple of grid cells, never less than one: pins sit
+    // one cell from a compact symbol's centre.
+    const int radius =
+        std::clamp(static_cast<int>(std::lround(26.0f * uiScale_ / grid)), 1, 3);
+    return nearestConnectionPoint(circuit_, snapScreen(screen), radius, point);
+}
 
-    for (const auto& component : circuit_.components) {
-        Point pins[kMaxComponentPins];
-        const int count = componentPins(component, pins);
-        for (int i = 0; i < count; ++i) {
-            const ImVec2 p = worldToScreen(pins[i]);
-            const float distance = std::hypot(p.x - screen.x, p.y - screen.y);
-            if (distance <= bestDistance) {
-                bestDistance = distance;
-                best = pins[i];
-                found = true;
-            }
-        }
+const std::vector<Point>& App::previewRoute(Point start, Point end)
+{
+    if (wirePreviewStart_ == start && wirePreviewEnd_ == end &&
+        wirePreviewRevision_ == circuit_.revision) {
+        return wirePreview_;
     }
-    for (const auto& wire : circuit_.wires) {
-        for (const auto& vertex : wire.points) {
-            const ImVec2 p = worldToScreen(vertex);
-            const float distance = std::hypot(p.x - screen.x, p.y - screen.y);
-            if (distance <= bestDistance) {
-                bestDistance = distance;
-                best = vertex;
-                found = true;
-            }
-        }
+    wirePreviewStart_ = start;
+    wirePreviewEnd_ = end;
+    wirePreviewRevision_ = circuit_.revision;
+    wirePreview_.clear();
+    if (start != end && !routeWire(circuit_, start, end, &wirePreview_)) {
+        wirePreview_ = lShapedRoute(start, end);
     }
-    if (found) {
-        *point = best;
-    }
-    return found;
+    return wirePreview_;
 }
 
 void App::drawGrid(ImDrawList* drawList, const ImVec2& min, const ImVec2& max)
@@ -666,23 +652,24 @@ void App::drawWireFlow(ImDrawList* drawList)
 
 void App::drawComponent(ImDrawList* drawList, const Component& component, bool selected)
 {
-    const float t = 2.6f * uiScale_;
+    // Simple two- and three-pin parts are drawn at half scale and only occupy
+    // two grid cells, so a circuit needs far less canvas. Their symbols are
+    // written in the old, larger coordinates and scaled here; multi-pin chips
+    // keep full size because their pins need the room.
+    const float symbolScale =
+        (pinCount(component.type) <= 3 && !component.legacySymbol) ? 0.5f : 1.0f;
+    const float t = 2.6f * uiScale_ * std::max(0.78f, symbolScale);
     const bool damagedLoad = component.damaged && isLoadType(component.type);
     const ImU32 body =
         selected ? Theme::accent() : (damagedLoad ? Theme::danger() : Theme::text());
     const ImU32 detail = selected ? Theme::accent()
                                   : (damagedLoad ? Theme::danger() : Theme::textDim());
     const float gp = gridPixels();
-    const auto P = [&](float x, float y) { return componentPoint(component, x, y); };
+    const float gps = gp * symbolScale;
+    const auto P = [&](float x, float y) {
+        return componentPoint(component, x * symbolScale, y * symbolScale);
+    };
     const ImVec2 center = P(0.0f, 0.0f);
-
-    if (selected) {
-        Point boundsMin;
-        Point boundsMax;
-        componentBounds(component, &boundsMin, &boundsMax);
-        drawList->AddRect(worldToScreen(boundsMin), worldToScreen(boundsMax),
-                          Theme::accent(), 6.0f * uiScale_, 0, 2.0f * uiScale_);
-    }
 
     const size_t sampleIndex = liveSampleIndex();
     double current = 0.0;
@@ -726,7 +713,7 @@ void App::drawComponent(ImDrawList* drawList, const Component& component, bool s
     case ComponentType::SignalSource: {
         drawList->AddLine(P(0, -2), P(0, -0.85f), body, t);
         drawList->AddLine(P(0, 0.85f), P(0, 2), body, t);
-        drawList->AddCircle(center, 0.85f * gp, body, 0, t);
+        drawList->AddCircle(center, 0.85f * gps, body, 0, t);
 
         if (component.source.mode == Waveform::DC) {
             drawList->AddLine(P(-0.16f, -0.35f), P(0.16f, -0.35f), body, t);
@@ -761,8 +748,8 @@ void App::drawComponent(ImDrawList* drawList, const Component& component, bool s
     case ComponentType::Switch:
         drawList->AddLine(P(0, -2), P(0, -0.62f), body, t);
         drawList->AddLine(P(0, 0.62f), P(0, 2), body, t);
-        drawList->AddCircleFilled(P(0, -0.62f), 0.11f * gp, body);
-        drawList->AddCircleFilled(P(0, 0.62f), 0.11f * gp, body);
+        drawList->AddCircleFilled(P(0, -0.62f), 0.11f * gps, body);
+        drawList->AddCircleFilled(P(0, 0.62f), 0.11f * gps, body);
         if (component.switchClosed) {
             drawList->AddLine(P(0, -0.62f), P(0, 0.62f), body, t);
         } else {
@@ -775,7 +762,7 @@ void App::drawComponent(ImDrawList* drawList, const Component& component, bool s
         if (intensity > 0.01) {
             const float glow = static_cast<float>(std::min(1.0, intensity));
             // Inner light under the symbol so the glass reads as "lit inside".
-            drawList->AddCircleFilled(glass, 0.95f * gp,
+            drawList->AddCircleFilled(glass, 0.95f * gps,
                                       IM_COL32(255, 226, 150,
                                                static_cast<int>(30 + glow * 110)));
             // Wide three-layer halo, drawn in the deferred pass so the light
@@ -793,7 +780,7 @@ void App::drawComponent(ImDrawList* drawList, const Component& component, bool s
             for (const auto& layer : kHalo) {
                 Glow halo;
                 halo.center = glass;
-                halo.radius = layer.radius * gp;
+                halo.radius = layer.radius * gps;
                 halo.core = false;
                 halo.color = IM_COL32(layer.red, layer.green, layer.blue,
                                       static_cast<int>(layer.base + glow * layer.span));
@@ -802,7 +789,7 @@ void App::drawComponent(ImDrawList* drawList, const Component& component, bool s
         }
         drawList->AddLine(P(0, -2), P(0, -1.22f), body, t);
         drawList->AddLine(P(0, 0.4f), P(0, 0.72f), body, t);
-        drawList->AddCircle(glass, 0.82f * gp, body, 0, t);
+        drawList->AddCircle(glass, 0.82f * gps, body, 0, t);
         polyline = {
             P(-0.42f, -0.42f), P(-0.18f, -1.04f), P(0.02f, -0.56f),
             P(0.22f, -1.02f),  P(0.42f, -0.42f),
@@ -817,7 +804,7 @@ void App::drawComponent(ImDrawList* drawList, const Component& component, bool s
     case ComponentType::Fan: {
         drawList->AddLine(P(0, -2), P(0, -0.95f), body, t);
         drawList->AddLine(P(0, 0.95f), P(0, 2), body, t);
-        drawList->AddCircle(center, 0.95f * gp, body, 0, t);
+        drawList->AddCircle(center, 0.95f * gps, body, 0, t);
         float spin = 0.0f;
         if (flowing && !damagedLoad && intensity > 0.001) {
             spin = static_cast<float>(liveClock_ * 6.0 *
@@ -827,14 +814,14 @@ void App::drawComponent(ImDrawList* drawList, const Component& component, bool s
         const float base = static_cast<float>(component.rotation) * 0.0174532925f;
         for (int blade = 0; blade < 3; ++blade) {
             const float angle = base + spin + static_cast<float>(blade) * 2.0943951f;
-            const ImVec2 tip(center.x + std::cos(angle) * 0.78f * gp,
-                             center.y + std::sin(angle) * 0.78f * gp);
-            const ImVec2 side(center.x + std::cos(angle + 0.55f) * 0.45f * gp,
-                              center.y + std::sin(angle + 0.55f) * 0.45f * gp);
+            const ImVec2 tip(center.x + std::cos(angle) * 0.78f * gps,
+                             center.y + std::sin(angle) * 0.78f * gps);
+            const ImVec2 side(center.x + std::cos(angle + 0.55f) * 0.45f * gps,
+                              center.y + std::sin(angle + 0.55f) * 0.45f * gps);
             drawList->AddTriangleFilled(center, tip, side, detail);
             drawList->AddLine(center, tip, body, 1.2f * uiScale_);
         }
-        drawList->AddCircleFilled(center, 0.14f * gp, body);
+        drawList->AddCircleFilled(center, 0.14f * gps, body);
         break;
     }
     case ComponentType::Tec12706:
@@ -879,7 +866,7 @@ void App::drawComponent(ImDrawList* drawList, const Component& component, bool s
             std::fabs(current) > 1e-5) {
             const float level =
                 static_cast<float>(std::min(1.0, std::fabs(current) / 0.02));
-            drawList->AddCircleFilled(center, 0.9f * gp,
+            drawList->AddCircleFilled(center, 0.9f * gps,
                                       IM_COL32(255, 160, 100,
                                                static_cast<int>(25 + level * 100)));
             const struct {
@@ -894,7 +881,7 @@ void App::drawComponent(ImDrawList* drawList, const Component& component, bool s
             for (const auto& layer : kLedHalo) {
                 Glow halo;
                 halo.center = center;
-                halo.radius = layer.radius * gp;
+                halo.radius = layer.radius * gps;
                 halo.core = false;
                 halo.color = IM_COL32(layer.red, layer.green, layer.blue,
                                       static_cast<int>(layer.base + level * layer.span));
@@ -924,7 +911,7 @@ void App::drawComponent(ImDrawList* drawList, const Component& component, bool s
     }
     case ComponentType::Npn:
     case ComponentType::Pnp: {
-        drawList->AddCircle(center, 1.15f * gp, body, 0, t);
+        drawList->AddCircle(center, 1.15f * gps, body, 0, t);
         drawList->AddLine(P(-2.0f, 0.0f), P(-0.55f, 0.0f), body, t);
         drawList->AddLine(P(-0.55f, -0.8f), P(-0.55f, 0.8f), body, t);
         drawList->AddLine(P(2.0f, -2.0f), P(0.35f, -0.55f), body, t);
@@ -952,26 +939,27 @@ void App::drawComponent(ImDrawList* drawList, const Component& component, bool s
         break;
     }
     case ComponentType::OpAmp: {
-        drawList->AddLine(P(-4.0f, -2.0f), P(-2.2f, -1.2f), body, t);
-        drawList->AddLine(P(-4.0f, 2.0f), P(-2.2f, 1.2f), body, t);
-        drawList->AddLine(P(4.0f, 0.0f), P(2.2f, 0.0f), body, t);
-        drawList->AddLine(P(0.0f, -4.0f), P(0.0f, -1.2f), body, t);
-        drawList->AddLine(P(0.0f, 4.0f), P(0.0f, 1.2f), body, t);
-        const ImVec2 triangle[] = {P(-2.2f, -2.2f), P(-2.2f, 2.2f), P(2.2f, 0.0f)};
+        // Leads reach the triangle edge; the supply pins enter top and bottom.
+        drawList->AddLine(P(-2.0f, -1.0f), P(-1.45f, -1.0f), body, t);
+        drawList->AddLine(P(-2.0f, 1.0f), P(-1.45f, 1.0f), body, t);
+        drawList->AddLine(P(1.45f, 0.0f), P(2.0f, 0.0f), body, t);
+        drawList->AddLine(P(0.0f, -2.0f), P(0.0f, -0.65f), body, t);
+        drawList->AddLine(P(0.0f, 2.0f), P(0.0f, 0.65f), body, t);
+        const ImVec2 triangle[] = {P(-1.45f, -1.5f), P(-1.45f, 1.5f), P(1.45f, 0.0f)};
         drawList->AddPolyline(triangle, 3, body, ImDrawFlags_Closed, t);
-        drawList->AddLine(P(-1.7f, -1.2f), P(-1.0f, -1.2f), detail, t);
-        drawList->AddLine(P(-1.35f, -1.55f), P(-1.35f, -0.85f), detail, t);
-        drawList->AddLine(P(-1.7f, 1.2f), P(-1.0f, 1.2f), detail, t);
+        drawList->AddLine(P(-1.1f, -0.85f), P(-0.6f, -0.85f), detail, t);
+        drawList->AddLine(P(-0.85f, -1.1f), P(-0.85f, -0.6f), detail, t);
+        drawList->AddLine(P(-1.1f, 0.85f), P(-0.6f, 0.85f), detail, t);
         break;
     }
     case ComponentType::Timer555: {
-        const ImVec2 bodyMin = P(-3.0f, -3.0f);
-        const ImVec2 bodyMax = P(3.0f, 3.0f);
+        const ImVec2 bodyMin = P(-1.4f, -2.6f);
+        const ImVec2 bodyMax = P(1.4f, 2.6f);
         drawList->AddRect(bodyMin, bodyMax, body, dp(2.0f), 0, t);
         for (int pin = 0; pin < 4; ++pin) {
             const float y = -3.0f + 2.0f * static_cast<float>(pin);
-            drawList->AddLine(P(-4.0f, y), P(-3.0f, y), body, t);
-            drawList->AddLine(P(3.0f, y), P(4.0f, y), body, t);
+            drawList->AddLine(P(-2.0f, y), P(-1.4f, y), body, t);
+            drawList->AddLine(P(1.4f, y), P(2.0f, y), body, t);
         }
         const char* title = "555";
         const ImVec2 titleSize = ImGui::CalcTextSize(title);
@@ -983,16 +971,16 @@ void App::drawComponent(ImDrawList* drawList, const Component& component, bool s
     case ComponentType::GateAnd:
     case ComponentType::GateOr:
     case ComponentType::GateNot: {
-        const ImVec2 bodyMin = P(-2.0f, -2.0f);
-        const ImVec2 bodyMax = P(2.0f, 2.0f);
+        const ImVec2 bodyMin = P(-1.2f, -1.5f);
+        const ImVec2 bodyMax = P(1.2f, 1.5f);
         drawList->AddRect(bodyMin, bodyMax, body, dp(2.0f), 0, t);
         if (component.type == ComponentType::GateNot) {
-            drawList->AddLine(P(-3.0f, 0.0f), P(-2.0f, 0.0f), body, t);
-            drawList->AddLine(P(2.0f, 0.0f), P(3.0f, 0.0f), body, t);
+            drawList->AddLine(P(-2.0f, 0.0f), P(-1.2f, 0.0f), body, t);
+            drawList->AddLine(P(1.2f, 0.0f), P(2.0f, 0.0f), body, t);
         } else {
-            drawList->AddLine(P(-3.0f, -1.0f), P(-2.0f, -1.0f), body, t);
-            drawList->AddLine(P(-3.0f, 1.0f), P(-2.0f, 1.0f), body, t);
-            drawList->AddLine(P(2.0f, 0.0f), P(3.0f, 0.0f), body, t);
+            drawList->AddLine(P(-2.0f, -1.0f), P(-1.2f, -1.0f), body, t);
+            drawList->AddLine(P(-2.0f, 1.0f), P(-1.2f, 1.0f), body, t);
+            drawList->AddLine(P(1.2f, 0.0f), P(2.0f, 0.0f), body, t);
         }
         const char* title = component.type == ComponentType::GateAnd
                                 ? "&"
@@ -1005,12 +993,12 @@ void App::drawComponent(ImDrawList* drawList, const Component& component, bool s
         break;
     }
     case ComponentType::Regulator7805: {
-        const ImVec2 bodyMin = P(-2.0f, -2.0f);
-        const ImVec2 bodyMax = P(2.0f, 2.0f);
+        const ImVec2 bodyMin = P(-1.2f, -1.2f);
+        const ImVec2 bodyMax = P(1.2f, 1.2f);
         drawList->AddRect(bodyMin, bodyMax, body, dp(2.0f), 0, t);
-        drawList->AddLine(P(-3.0f, 0.0f), P(-2.0f, 0.0f), body, t);
-        drawList->AddLine(P(2.0f, 0.0f), P(3.0f, 0.0f), body, t);
-        drawList->AddLine(P(0.0f, 2.0f), P(0.0f, 3.0f), body, t);
+        drawList->AddLine(P(-2.0f, 0.0f), P(-1.2f, 0.0f), body, t);
+        drawList->AddLine(P(1.2f, 0.0f), P(2.0f, 0.0f), body, t);
+        drawList->AddLine(P(0.0f, 1.2f), P(0.0f, 2.0f), body, t);
         const char* title = "7805";
         const ImVec2 titleSize = ImGui::CalcTextSize(title);
         drawList->AddText(ImVec2(center.x - titleSize.x * 0.5f,
@@ -1052,7 +1040,7 @@ void App::drawComponent(ImDrawList* drawList, const Component& component, bool s
     case ComponentType::PwmSource: {
         drawList->AddLine(P(0, -2), P(0, -0.85f), body, t);
         drawList->AddLine(P(0, 0.85f), P(0, 2), body, t);
-        drawList->AddCircle(center, 0.85f * gp, body, 0, t);
+        drawList->AddCircle(center, 0.85f * gps, body, 0, t);
         const ImVec2 pulse[] = {P(-0.55f, 0.22f), P(-0.36f, 0.22f), P(-0.36f, -0.22f),
                                 P(-0.12f, -0.22f), P(-0.12f, 0.22f), P(0.12f, 0.22f),
                                 P(0.12f, -0.22f), P(0.36f, -0.22f), P(0.36f, 0.22f),
@@ -1104,8 +1092,8 @@ void App::drawComponent(ImDrawList* drawList, const Component& component, bool s
         drawList->AddLine(P(0, -2), P(0, -1.15f), body, t);
         drawList->AddLine(P(0, 1.15f), P(0, 2), body, t);
         drawList->AddRect(P(-0.78f, -1.15f), P(0.78f, 1.15f), body, dp(2.5f), 0, t);
-        drawList->AddCircle(P(0, -0.55f), 0.32f * gp, body, 0, t);
-        drawList->AddCircle(P(0, 0.55f), 0.32f * gp, body, 0, t);
+        drawList->AddCircle(P(0, -0.55f), 0.32f * gps, body, 0, t);
+        drawList->AddCircle(P(0, 0.55f), 0.32f * gps, body, 0, t);
         drawList->AddLine(P(-0.18f, -0.73f), P(0.18f, -0.37f), detail, 1.4f * uiScale_);
         drawList->AddLine(P(-0.18f, 0.37f), P(0.18f, 0.73f), detail, 1.4f * uiScale_);
         break;
@@ -1149,15 +1137,13 @@ void App::drawComponent(ImDrawList* drawList, const Component& component, bool s
     const ImVec2 nameSize = ImGui::CalcTextSize(name);
     const ImVec2 valueSize = ImGui::CalcTextSize(value.c_str());
     const float lineHeight = ImGui::GetFontSize() + 1.0f;
-    float labelY = center.y + 2.35f * gp;
-    if (component.type == ComponentType::Ground) {
-        labelY = center.y + 1.3f * gp;
-    } else if (pinCount(component.type) > 2) {
-        Point boundsMin;
-        Point boundsMax;
-        componentBounds(component, &boundsMin, &boundsMax);
-        labelY = worldToScreen(Point{0, boundsMax.y}).y + dp(4.0f);
-    }
+    // The label sits just under the symbol: the bounding box minus the one-cell
+    // touch margin, so a two-cell part no longer pushes its name two cells away.
+    Point boundsMin;
+    Point boundsMax;
+    componentBounds(component, &boundsMin, &boundsMax);
+    const float labelY =
+        center.y + static_cast<float>(boundsMax.y - 1 - component.gridY) * gp + dp(3.0f);
     const ImU32 nameColor = selected ? Theme::accent()
                                      : (damagedLoad ? Theme::danger() : Theme::text());
     const ImU32 valueColor = damagedLoad ? Theme::danger() : Theme::textDim();
@@ -1233,21 +1219,35 @@ void App::handleCanvasTap(const ImVec2& mouse)
     }
 
     if (tool_ == Tool::Wire) {
-        Point point = snapScreen(mouse);
-        nearestConnection(mouse, &point);
-        if (!wireStarted_) {
-            wireStart_ = point;
-            wireStarted_ = true;
-            setStatus("点击第二个点完成导线");
-        } else {
-            if (point != wireStart_) {
-                pushUndo();
-                circuit_.addWire(wireStart_, point);
-                markChanged();
-                setStatus("导线已添加");
-            }
-            wireStarted_ = false;
+        Point target;
+        if (!hoveredConnectionTarget(mouse, &target)) {
+            // Blank canvas is deliberately not a target: a wire only ever
+            // starts and ends on a pin or an existing joint.
+            setStatus("导线只能接在元件引脚或导线接头上，请点击高亮的接点");
+            return;
         }
+        if (!wireStarted_) {
+            wireStart_ = target;
+            wireStarted_ = true;
+            setStatus("点击第二个接点，自动布线");
+            return;
+        }
+        if (target == wireStart_) {
+            wireStarted_ = false;
+            setStatus("已取消导线");
+            return;
+        }
+        pushUndo();
+        std::vector<Point> route;
+        const bool routed = routeWire(circuit_, wireStart_, target, &route);
+        if (!routed) {
+            route = lShapedRoute(wireStart_, target);
+        }
+        circuit_.addWirePoints(std::move(route));
+        markChanged();
+        setStatus(routed ? "导线已添加（已自动绕开其他导线与引脚）"
+                         : "导线已添加（没有干净路径，使用直角连接）");
+        wireStarted_ = false;
         return;
     }
 
@@ -1402,23 +1402,49 @@ void App::drawCanvas(float height)
     if (placement_.active && hovered) {
         drawGhost(drawList, mouse);
     }
-    if (tool_ == Tool::Wire && wireStarted_) {
-        Point end = snapScreen(mouse);
-        nearestConnection(mouse, &end);
-        const std::vector<Point> path = lShape(wireStart_, end);
-        for (size_t i = 0; i + 1 < path.size(); ++i) {
-            drawList->AddLine(worldToScreen(path[i]), worldToScreen(path[i + 1]),
-                              Theme::accent(), 2.6f * uiScale_);
+    if (tool_ == Tool::Wire) {
+        // Every legal endpoint gets a ring, so "where may this wire go" is
+        // obvious and the blank canvas is clearly not a target.
+        Point hoveredTarget;
+        const bool hasHover = hovered && hoveredConnectionTarget(mouse, &hoveredTarget);
+        const std::vector<Point> targets = connectionPoints(circuit_);
+        for (const Point& target : targets) {
+            const ImVec2 screen = worldToScreen(target);
+            const bool isStart = wireStarted_ && target == wireStart_;
+            const bool isHover = hasHover && target == hoveredTarget;
+            if (isStart || isHover) {
+                drawList->AddCircleFilled(screen, 5.5f * uiScale_,
+                                          isStart ? Theme::warning() : Theme::accent());
+                drawList->AddCircle(screen, 9.0f * uiScale_,
+                                    isStart ? Theme::warning() : Theme::accent(), 0,
+                                    2.0f * uiScale_);
+            } else {
+                drawList->AddCircle(screen, 4.0f * uiScale_,
+                                    IM_COL32(76, 141, 255, 130), 0, 1.6f * uiScale_);
+            }
         }
-        drawList->AddCircleFilled(worldToScreen(wireStart_), 5.0f * uiScale_,
-                                  Theme::accent());
+        if (wireStarted_) {
+            // Preview the route the tap would create.
+            if (hasHover && hoveredTarget != wireStart_) {
+                const std::vector<Point>& path = previewRoute(wireStart_, hoveredTarget);
+                for (size_t i = 0; i + 1 < path.size(); ++i) {
+                    drawList->AddLine(worldToScreen(path[i]), worldToScreen(path[i + 1]),
+                                      Theme::accent(), 2.6f * uiScale_);
+                }
+                drawList->AddCircle(worldToScreen(hoveredTarget), 7.0f * uiScale_,
+                                    Theme::accent(), 0, 2.0f * uiScale_);
+            }
+            drawList->AddCircleFilled(worldToScreen(wireStart_), 5.0f * uiScale_,
+                                      Theme::warning());
+        }
     }
 
     const char* hint = nullptr;
     if (placement_.active) {
         hint = "点击放置 · 拖动平移";
     } else if (tool_ == Tool::Wire) {
-        hint = wireStarted_ ? "点击第二个点完成导线" : "点击引脚或网格开始导线";
+        hint = wireStarted_ ? "点击第二个高亮接点 · 自动布线"
+                            : "点引脚 / 接头开始导线 · 空白处不画线";
     } else if (canvasSize_.x > dp(260.0f)) {
         hint = "拖动空白平移 · 双指缩放";
     }

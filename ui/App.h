@@ -175,7 +175,12 @@ private:
     void fitView();
     int hitComponent(ImVec2 screen) const;
     int hitWire(ImVec2 screen) const;
-    bool nearestConnection(ImVec2 screen, Point* point) const;
+    // In wire mode a click only lands on a connection point (a component pin
+    // or an existing wire joint); blank canvas is not a target.
+    bool hoveredConnectionTarget(ImVec2 screen, Point* point) const;
+    // Cached auto-route for the wire preview, so previewing does not re-run the
+    // router every frame.
+    const std::vector<Point>& previewRoute(Point start, Point end);
     void drawGrid(ImDrawList* drawList, const ImVec2& min, const ImVec2& max);
     void drawWire(ImDrawList* drawList, const Wire& wire, bool selected);
     void drawWireFlow(ImDrawList* drawList);
@@ -263,6 +268,10 @@ private:
 
     bool wireStarted_ = false;
     Point wireStart_{};
+    std::vector<Point> wirePreview_;
+    Point wirePreviewStart_{};
+    Point wirePreviewEnd_{};
+    int wirePreviewRevision_ = -1;
 
     bool dragging_ = false;
     int dragComponent_ = -1;

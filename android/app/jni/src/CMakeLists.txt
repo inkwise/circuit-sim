@@ -39,7 +39,8 @@ add_library(core STATIC
     "${CL_ROOT}/core/src/ProjectIO.cpp"
     "${CL_ROOT}/core/src/Examples.cpp"
     "${CL_ROOT}/core/src/Measure.cpp"
-    "${CL_ROOT}/core/src/Thermoelectric.cpp")
+    "${CL_ROOT}/core/src/Thermoelectric.cpp"
+    "${CL_ROOT}/core/src/Router.cpp")
 target_include_directories(core PUBLIC "${CL_ROOT}/core/include")
 target_link_libraries(core PUBLIC ngspice)
 target_compile_options(core PRIVATE -Wall -Wextra)

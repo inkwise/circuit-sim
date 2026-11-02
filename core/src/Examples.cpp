@@ -27,6 +27,9 @@ Circuit makeDividerDemo()
     circuit.addWirePoints({Point{16, 10}, Point{16, 12}});
     circuit.addWirePoints({Point{8, 12}, Point{8, 16}});
     circuit.addWirePoints({Point{16, 16}, Point{8, 16}});
+    // The coordinates above were laid out for the old, twice-as-tall symbols;
+    // this moves the wire endpoints onto the current pin positions.
+    migrateLegacyPinSpacing(circuit);
     return circuit;
 }
 
@@ -92,6 +95,9 @@ Circuit makeTimer555Demo()
     circuit.addWirePoints({Point{26, 8}, Point{22, 8}});
     circuit.addWirePoints({Point{22, 8}, Point{22, 11}});
     circuit.addWirePoints({Point{16, 11}, Point{12, 11}});
+    // The coordinates above were laid out for the old, twice-as-tall symbols;
+    // this moves the wire endpoints onto the current pin positions.
+    migrateLegacyPinSpacing(circuit);
     return circuit;
 }
 
@@ -123,6 +129,9 @@ Circuit makeRcDemo()
     circuit.addWirePoints({Point{16, 10}, Point{16, 12}});
     circuit.addWirePoints({Point{8, 12}, Point{8, 16}});
     circuit.addWirePoints({Point{16, 16}, Point{8, 16}});
+    // The coordinates above were laid out for the old, twice-as-tall symbols;
+    // this moves the wire endpoints onto the current pin positions.
+    migrateLegacyPinSpacing(circuit);
     return circuit;
 }
 
@@ -153,6 +162,9 @@ Circuit makeThermoelectricDemo()
     circuit.addWirePoints({Point{10, 9}, Point{20, 9}});
     circuit.addWirePoints({Point{20, 13}, Point{20, 17}, Point{10, 17}});
     circuit.addWirePoints({Point{10, 13}, Point{10, 17}});
+    // The coordinates above were laid out for the old, twice-as-tall symbols;
+    // this moves the wire endpoints onto the current pin positions.
+    migrateLegacyPinSpacing(circuit);
     return circuit;
 }
 
@@ -319,6 +331,9 @@ Circuit makeMosSwitchBoardDemo()
     // SC2: ground clip wired to the board ground, CH1 left free for the user.
     circuit.addWirePoints({Point{106, 36}, Point{106, 44}});
 
+    // The coordinates above were laid out for the old, twice-as-tall symbols;
+    // this moves the wire endpoints onto the current pin positions.
+    migrateLegacyPinSpacing(circuit);
     return circuit;
 }
 
