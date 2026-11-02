@@ -2020,6 +2020,80 @@ void testLoadRatings()
           "missing load ratings are filled with defaults");
 }
 
+// Values typed into a parameter field: the editor pops up the on-screen
+// keyboard, so the parser has to accept everything an engineer types, and the
+// text shown in the field has to parse back to exactly the value it came from.
+void testEngineeringInput()
+{
+    struct Case {
+        const char* text;
+        double value;
+    };
+    static const Case kCases[] = {
+        {"4700", 4700.0},
+        {"4.7k", 4700.0},
+        {"4.7 k", 4700.0},
+        {"4.7kΩ", 4700.0},
+        {"1k2", 1200.0},          // European "1k2" = 1.2 kΩ
+        {"4R7", 4.7},             // resistor "R" as the decimal marker
+        {"100n", 1e-7},
+        {"10u", 1e-5},
+        {"10µ", 1e-5},            // U+00B5 micro sign
+        {"2μ2", 2.2e-6},          // U+03BC Greek mu
+        {"1m", 1e-3},
+        {"1M", 1e6},
+        {"1meg", 1e6},
+        {"1e-3", 1e-3},
+        {"2.5E3", 2500.0},
+        {"4,7k", 4700.0},         // comma as the decimal separator
+        {"1,000", 1000.0},        // comma as the thousands separator
+        {" 12 V ", 12.0},
+        {"50%", 50.0},
+        {".47", 0.47},
+        {"-5", -5.0},
+        {"1e6Hz", 1e6},
+        {"１２３", 123.0},          // full-width digits from a Chinese IME
+    };
+    for (const Case& item : kCases) {
+        const ParsedNumber parsed = parseEngineering(item.text);
+        const double tolerance = 1e-9 * std::max(1.0, std::fabs(item.value));
+        check(parsed.ok && std::fabs(parsed.value - item.value) <= tolerance,
+              std::string("\"") + item.text + "\" is understood as " +
+                  formatSI(item.value, ""));
+    }
+
+    static const char* kRejected[] = {"", "  ", "abc", "k", "e-3", "%"};
+    for (const char* text : kRejected) {
+        check(!parseEngineering(text).ok,
+              std::string("word-only input \"") + text + "\" is rejected");
+    }
+
+    // Opening a parameter and confirming it must not change the value: the
+    // text the editor starts with has to parse back unchanged.
+    static const double kRoundTrip[] = {4700.0, 1e-7, 1e-9, 12.0, 2.2e-6, 33.3, 1e6, 0.06};
+    bool roundTripOk = true;
+    for (double value : kRoundTrip) {
+        const std::string text = formatEditable(value);
+        const ParsedNumber parsed = parseEngineering(text);
+        if (!parsed.ok || std::fabs(parsed.value - value) > 1e-9 * std::max(1.0, value)) {
+            roundTripOk = false;
+        }
+    }
+    check(roundTripOk, "the editable text of a value parses back to the same value");
+
+    // The editor opens 4.7 kΩ as "4.7" with the "k" prefix selected.
+    const SiValue kilo = splitSI(4700.0, 0, 6);
+    check(std::fabs(kilo.scaled - 4.7) < 1e-12 && kilo.exponent == 3,
+          "4700 Ω is shown as 4.7 with the kilo prefix");
+    const SiValue nano = splitSI(1e-7, -12, 3);
+    check(std::fabs(nano.scaled - 100.0) < 1e-9 && nano.exponent == -9,
+          "100 nF is shown as 100 with the nano prefix");
+    const SiValue clamped = splitSI(1e-6, 0, 6);
+    check(clamped.exponent == 0, "a prefix outside the field range falls back to none");
+    check(siPrefix(3) == "k" && siPrefix(-6) == "µ" && siPrefix(0).empty(),
+          "SI prefix letters match the formatted values");
+}
+
 }  // namespace
 
 int main()
@@ -2059,6 +2133,7 @@ int main()
     testSourceWiringErrors();
     testWireCrossings();
     testLoadRatings();
+    testEngineeringInput();
 
     if (g_failures == 0) {
         std::printf("ALL TESTS PASSED\n");

@@ -38,6 +38,38 @@ public:
         Components,
     };
 
+    // Numbers that can be typed exactly. A slider is good for coarse work, but
+    // "4.7 kΩ" has to be enterable as a value, so every one of these fields can
+    // also be opened on the on-screen keyboard.
+    enum class NumberField {
+        None,
+        Value,           // R / C / L of the part, load resistance, zener voltage
+        SeriesR,         // power-inductor DCR or electrolytic ESR
+        RatedVoltage,    // loads: nominal voltage
+        MinVoltage,      // loads: start-up voltage
+        MaxVoltage,      // loads: maximum voltage before it burns out
+        MaxCurrent,      // loads: current limit
+        Amplitude,       // source DC value / amplitude
+        Frequency,       // source frequency
+        Duty,            // PWM duty cycle, in percent
+        TransientStep,   // analysis settings: time step
+        TransientStop,   // analysis settings: stop time
+    };
+
+    // Range, unit and prefix choices of one numeric parameter. Shared by the
+    // slider row and the keyboard dialog so the two can never disagree.
+    struct NumberFieldInfo {
+        std::string title;                      // 电阻值
+        const char* unit = "";                  // Ω
+        double value = 0.0;
+        double minimum = 0.0;
+        double maximum = 0.0;
+        bool logarithmic = false;               // slider maps the log10
+        const char* sliderFormat = "%.2f";      // in-slider text
+        int prefixMinimum = 0;                  // smallest SI prefix offered
+        int prefixMaximum = 0;                  // largest SI prefix offered
+    };
+
     struct Placement {
         bool active = false;
         ComponentType type = ComponentType::Resistor;
@@ -61,6 +93,10 @@ public:
 
     void onAppBackground();
 
+    // True while the numeric field of the parameter dialog is being edited, so
+    // the platform can show a number pad instead of a text keyboard.
+    bool wantsNumericKeyboard() const;
+
 private:
     // Screens
     void drawHome();
@@ -83,6 +119,19 @@ private:
     void drawSheetComponents(const ImVec2& size);
     void drawEditorMenuPopup();
     void drawSelectionCard();
+    // Exact value entry: the keyboard dialog and the tappable value chips that
+    // open it. Chips sit next to every editable number in the parameter card.
+    void drawNumberEditor();
+    void openNumberEditor(int componentId, NumberField field);
+    bool numberFieldInfo(const Component* component, NumberField field,
+                         NumberFieldInfo* info) const;
+    // Clamps and stores one typed/slid value. The caller pushes undo first (a
+    // drag releases one undo step, not one per frame).
+    void applyNumberField(int componentId, NumberField field, double value);
+    // Slider bound to a NumberField, so a row is always "drag or type".
+    bool drawFieldSlider(int componentId, NumberField field, float width);
+    bool drawValueChip(const char* id, int componentId, NumberField field,
+                       const std::string& text, const ImVec2& size);
     void drawResultsOverlay();
     void drawCurrentsTab();
     void drawTransientPlot(const ImVec2& size);
@@ -333,6 +382,25 @@ private:
     std::string deleteName_;
     char newProjectName_[96] = {};
     char renameBuffer_[96] = {};
+
+    // Keyboard entry of one numeric parameter. The dialog edits the buffer while
+    // the number pad is up; nothing is written to the circuit before 确定.
+    struct NumberEditorState {
+        bool open = false;
+        bool needsOpen = false;      // OpenPopup() still to be called
+        bool requestFocus = false;   // focus the field again next frame
+        bool selectAll = false;      // select the text once, when it opens
+        int componentId = -1;        // -1 for analysis settings
+        NumberField field = NumberField::None;
+        char buffer[64] = {};
+        std::string title;
+        std::string unit;
+        double minimum = 0.0;
+        double maximum = 0.0;
+        int prefixExponent = 0;      // SI prefix chosen with the prefix buttons
+        std::string error;
+    };
+    NumberEditorState numberEditor_;
 
     // Layout positions captured each frame for the overlay panels.
     ImVec2 rootMin_{0, 0};

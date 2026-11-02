@@ -597,6 +597,7 @@ void App::frame()
         drawEditorMenuPopup();
         drawSettingsPopup();
         drawRenameDialog();
+        drawNumberEditor();
     }
 
     ImGui::End();
@@ -1331,12 +1332,22 @@ void App::drawSettingsPopup()
             scheduleLiveRerun(200);
         }
     }
+    ImGui::SameLine(0.0f, dp(8.0f));
+    if (ImGui::Button("键盘输入", ImVec2(dp(110.0f), dp(38.0f)))) {
+        openNumberEditor(-1, NumberField::TransientStep);
+        ImGui::CloseCurrentPopup();
+    }
     ImGui::SetNextItemWidth(dp(190.0f));
     if (ImGui::Combo("停止时间", &stopIndex, stopLabels, stopCount)) {
         transient_.stop = stops[stopIndex];
         if (live_) {
             scheduleLiveRerun(200);
         }
+    }
+    ImGui::SameLine(0.0f, dp(8.0f));
+    if (ImGui::Button("键盘输入##stop", ImVec2(dp(110.0f), dp(38.0f)))) {
+        openNumberEditor(-1, NumberField::TransientStop);
+        ImGui::CloseCurrentPopup();
     }
     ImGui::TextDisabled("点数约 %.0f（上限 200000）",
                         transient_.stop / transient_.step + 1.0);

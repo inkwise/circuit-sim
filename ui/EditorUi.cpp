@@ -644,9 +644,619 @@ void App::drawSheetComponents(const ImVec2& size)
     ImGui::Dummy(ImVec2(0.0f, 0.0f));
 }
 
+// ---------------------------------------------------------------------------
+// Numeric parameters: sliders for coarse work, the keyboard for exact values
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct NumberRange {
+    double minimum;
+    double maximum;
+};
+
+// Unit, range and title of a part's main value, shared by the slider row and
+// the keyboard dialog so the two can never disagree.
+NumberRange valueRange(ComponentType type)
+{
+    switch (type) {
+    case ComponentType::Capacitor:
+        return {1e-12, 1e-2};
+    case ComponentType::Inductor:
+    case ComponentType::PowerInductor:
+        return {1e-9, 1.0};
+    case ComponentType::ElectrolyticCap:
+        return {1e-7, 1e-1};
+    case ComponentType::Zener:
+        return {2.4, 24.0};
+    case ComponentType::Oscilloscope:
+        return {1e6, 1e6};
+    default:
+        return {1.0, 1e7};
+    }
+}
+
+const char* valueUnit(ComponentType type)
+{
+    switch (type) {
+    case ComponentType::Capacitor:
+    case ComponentType::ElectrolyticCap:
+        return "F";
+    case ComponentType::Inductor:
+    case ComponentType::PowerInductor:
+        return "H";
+    case ComponentType::Zener:
+        return "V";
+    default:
+        return "Ω";
+    }
+}
+
+const char* valueTitle(ComponentType type)
+{
+    switch (type) {
+    case ComponentType::Capacitor:
+    case ComponentType::ElectrolyticCap:
+        return "容值";
+    case ComponentType::Inductor:
+    case ComponentType::PowerInductor:
+        return "电感值";
+    case ComponentType::Zener:
+        return "稳压值";
+    default:
+        return "电阻值";
+    }
+}
+
+// SI prefixes that bracket the allowed range: a 1 Ω .. 10 MΩ field offers
+// none / k / M, a 1 pF .. 10 mF field offers p / n / µ / m.
+void prefixWindowFor(double minimum, double maximum, int* prefixMinimum,
+                     int* prefixMaximum)
+{
+    const auto stepFor = [](double value, int fallback) {
+        if (!(value > 0.0) || !std::isfinite(value)) {
+            return fallback;
+        }
+        const int exponent =
+            static_cast<int>(std::floor(std::log10(value) / 3.0) * 3.0);
+        return std::clamp(exponent, -12, 9);
+    };
+    *prefixMinimum = stepFor(minimum, 0);
+    *prefixMaximum = std::max(*prefixMinimum, stepFor(maximum, 0));
+}
+
+}  // namespace
+
+bool App::numberFieldInfo(const Component* component, NumberField field,
+                          NumberFieldInfo* info) const
+{
+    if (!info) {
+        return false;
+    }
+    NumberFieldInfo result;
+
+    const auto finish = [&](NumberFieldInfo value) {
+        prefixWindowFor(value.minimum, value.maximum, &value.prefixMinimum,
+                        &value.prefixMaximum);
+        *info = value;
+        return true;
+    };
+    const auto finishIntegral = [&](NumberFieldInfo value) {
+        value.prefixMinimum = 0;
+        value.prefixMaximum = 0;
+        *info = value;
+        return true;
+    };
+
+    // Analysis settings exist without a component.
+    if (field == NumberField::TransientStep) {
+        result.title = "瞬态步长";
+        result.unit = "s";
+        result.value = transient_.step;
+        result.minimum = 100e-9;
+        result.maximum = 1e-3;
+        result.sliderFormat = "%.3g s";
+        return finish(result);
+    }
+    if (field == NumberField::TransientStop) {
+        result.title = "停止时间";
+        result.unit = "s";
+        result.value = transient_.stop;
+        result.minimum = 100e-6;
+        result.maximum = 50e-3;
+        result.sliderFormat = "%.3g s";
+        return finish(result);
+    }
+    if (!component) {
+        return false;
+    }
+
+    switch (field) {
+    case NumberField::Value: {
+        const NumberRange range = valueRange(component->type);
+        result.title = valueTitle(component->type);
+        result.unit = valueUnit(component->type);
+        result.value = component->value;
+        result.minimum = range.minimum;
+        result.maximum = range.maximum;
+        // A slider over several decades reads better on a log scale; a narrow
+        // range such as a zener voltage stays linear.
+        result.logarithmic = range.minimum > 0.0 && range.maximum / range.minimum >= 1000.0;
+        result.sliderFormat = "";
+        return finish(result);
+    }
+    case NumberField::SeriesR:
+        result.title = component->type == ComponentType::PowerInductor ? "绕组电阻 DCR"
+                                                                      : "等效串联电阻 ESR";
+        result.unit = "Ω";
+        result.value = component->seriesR;
+        result.minimum = 1e-3;
+        result.maximum = 1e2;
+        result.logarithmic = true;
+        result.sliderFormat = "";
+        return finish(result);
+    case NumberField::RatedVoltage:
+        result.title = "额定电压";
+        result.unit = "V";
+        result.value = component->ratedVoltage;
+        result.minimum = 1.0;
+        result.maximum = 48.0;
+        result.sliderFormat = "%.1f V";
+        return finishIntegral(result);
+    case NumberField::MinVoltage:
+        result.title = "启动电压";
+        result.unit = "V";
+        result.value = component->minVoltage;
+        result.minimum = 0.5;
+        result.maximum = std::max(1.0, component->ratedVoltage);
+        result.sliderFormat = "%.1f V";
+        return finishIntegral(result);
+    case NumberField::MaxVoltage:
+        result.title = "电压上限";
+        result.unit = "V";
+        result.value = component->maxVoltage;
+        result.minimum = std::max(component->ratedVoltage * 0.5, 1.0);
+        result.maximum = std::max(component->ratedVoltage * 2.0, 2.0);
+        result.sliderFormat = "%.1f V";
+        return finishIntegral(result);
+    case NumberField::MaxCurrent:
+        result.title = "电流上限";
+        result.unit = "A";
+        result.value = component->maxCurrent;
+        result.minimum = 0.01;
+        result.maximum = 20.0;
+        result.logarithmic = true;
+        result.sliderFormat = "";
+        return finish(result);
+    case NumberField::Amplitude:
+        result.title = component->source.mode == Waveform::DC ? "电压" : "幅值";
+        result.unit = "V";
+        result.value = component->source.amplitude;
+        result.minimum = 0.0;
+        result.maximum = 20.0;
+        result.sliderFormat = "%.2f V";
+        return finishIntegral(result);
+    case NumberField::Frequency:
+        result.title = "频率";
+        result.unit = "Hz";
+        result.value = component->source.frequency;
+        result.minimum = 1.0;
+        result.maximum = 1e6;
+        result.logarithmic = true;
+        result.sliderFormat = "";
+        return finish(result);
+    case NumberField::Duty:
+        result.title = "占空比";
+        result.unit = "%";
+        result.value = std::clamp(component->source.duty * 100.0, 1.0, 99.0);
+        result.minimum = 1.0;
+        result.maximum = 99.0;
+        result.sliderFormat = "%.1f %%";
+        return finishIntegral(result);
+    case NumberField::None:
+    case NumberField::TransientStep:
+    case NumberField::TransientStop:
+        // Handled before the component lookup: they belong to the analysis.
+        break;
+    }
+    return false;
+}
+
+void App::applyNumberField(int componentId, NumberField field, double value)
+{
+    switch (field) {
+    case NumberField::TransientStep:
+        transient_.step = value;
+        if (live_) {
+            scheduleLiveRerun(200);
+        }
+        return;
+    case NumberField::TransientStop:
+        transient_.stop = value;
+        if (live_) {
+            scheduleLiveRerun(200);
+        }
+        return;
+    default:
+        break;
+    }
+
+    Component* component = circuit_.findComponent(componentId);
+    if (!component) {
+        return;
+    }
+    NumberFieldInfo info;
+    if (!numberFieldInfo(component, field, &info)) {
+        return;
+    }
+    value = std::clamp(value, info.minimum, info.maximum);
+
+    switch (field) {
+    case NumberField::Value:
+        component->value = value;
+        break;
+    case NumberField::SeriesR:
+        component->seriesR = value;
+        break;
+    case NumberField::RatedVoltage: {
+        // Keep the start-up / maximum limits in proportion to the rating.
+        const double previous = std::max(0.1, component->ratedVoltage);
+        const double ratio = value / previous;
+        component->ratedVoltage = value;
+        component->minVoltage *= ratio;
+        component->maxVoltage *= ratio;
+        applyLoadDefaults(*component);
+        break;
+    }
+    case NumberField::MinVoltage:
+        component->minVoltage = value;
+        break;
+    case NumberField::MaxVoltage:
+        component->maxVoltage = value;
+        component->maxCurrent = std::max(component->maxCurrent, 0.0);
+        break;
+    case NumberField::MaxCurrent:
+        component->maxCurrent = value;
+        break;
+    case NumberField::Amplitude:
+        component->source.amplitude = value;
+        if (component->source.mode == Waveform::DC) {
+            component->source.dc = value;
+        }
+        component->value = value;
+        break;
+    case NumberField::Frequency:
+        component->source.frequency = std::max(1e-6, value);
+        component->source.period = 1.0 / component->source.frequency;
+        component->source.pulseWidth =
+            pulseWidthFor(component->source.period, component->source.duty);
+        component->source.rise = pulseRiseFor(component->source.period);
+        break;
+    case NumberField::Duty:
+        component->source.duty = std::clamp(value / 100.0, 0.01, 0.99);
+        component->source.pulseWidth =
+            pulseWidthFor(component->source.period, component->source.duty);
+        break;
+    default:
+        return;
+    }
+
+    circuit_.touch();
+    markChanged();
+}
+
+bool App::drawFieldSlider(int componentId, NumberField field, float width)
+{
+    NumberFieldInfo info;
+    const Component* component =
+        componentId >= 0 ? circuit_.findComponent(componentId) : nullptr;
+    if (!numberFieldInfo(component, field, &info)) {
+        return false;
+    }
+
+    ImGui::PushID(static_cast<int>(field));
+    ImGui::SetNextItemWidth(width);
+    float value = static_cast<float>(std::clamp(info.value, info.minimum, info.maximum));
+    bool changed = false;
+    if (info.logarithmic) {
+        float logValue = static_cast<float>(
+            std::log10(std::max(info.minimum, static_cast<double>(value))));
+        changed = ImGui::SliderFloat("##value", &logValue,
+                                     static_cast<float>(std::log10(info.minimum)),
+                                     static_cast<float>(std::log10(info.maximum)), "");
+        if (changed) {
+            value = static_cast<float>(std::pow(10.0, static_cast<double>(logValue)));
+        }
+    } else {
+        changed = ImGui::SliderFloat("##value", &value, static_cast<float>(info.minimum),
+                                     static_cast<float>(info.maximum),
+                                     info.sliderFormat);
+    }
+    if (ImGui::IsItemActivated()) {
+        pushUndo();
+    }
+    ImGui::PopID();
+
+    if (changed) {
+        applyNumberField(componentId, field, value);
+    }
+    return changed;
+}
+
+bool App::drawValueChip(const char* id, int componentId, NumberField field,
+                        const std::string& text, const ImVec2& size)
+{
+    ImGui::PushID(id);
+    ImGui::PushStyleColor(ImGuiCol_Button, Theme::toVec4(Theme::panelAlt()));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, Theme::toVec4(Theme::surface()));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, Theme::toVec4(Theme::accentSoft()));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.30f, 0.55f, 1.0f, 0.55f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, dp(1.0f));
+    const bool clicked =
+        ImGui::Button(clipText(text, size.x - dp(12.0f)).c_str(), size);
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor(4);
+    ImGui::PopID();
+    if (clicked) {
+        openNumberEditor(componentId, field);
+    }
+    return clicked;
+}
+
+void App::openNumberEditor(int componentId, NumberField field)
+{
+    const Component* component =
+        componentId >= 0 ? circuit_.findComponent(componentId) : nullptr;
+    NumberFieldInfo info;
+    if (!numberFieldInfo(component, field, &info)) {
+        return;
+    }
+
+    numberEditor_.open = true;
+    numberEditor_.needsOpen = true;
+    numberEditor_.requestFocus = true;
+    numberEditor_.selectAll = true;
+    numberEditor_.componentId = componentId;
+    numberEditor_.field = field;
+    numberEditor_.title = info.title;
+    numberEditor_.unit = info.unit;
+    numberEditor_.minimum = info.minimum;
+    numberEditor_.maximum = info.maximum;
+    numberEditor_.error.clear();
+    // Open the field the way an engineer writes the value: "4.7" with the kilo
+    // prefix selected, not "4700".
+    const SiValue split = splitSI(info.value, info.prefixMinimum, info.prefixMaximum);
+    numberEditor_.prefixExponent = split.exponent;
+    std::snprintf(numberEditor_.buffer, sizeof(numberEditor_.buffer), "%s",
+                  formatEditable(split.scaled).c_str());
+}
+
+bool App::wantsNumericKeyboard() const
+{
+    return numberEditor_.open;
+}
+
+void App::drawNumberEditor()
+{
+    if (!numberEditor_.open) {
+        return;
+    }
+    Component* component = numberEditor_.componentId >= 0
+                               ? circuit_.findComponent(numberEditor_.componentId)
+                               : nullptr;
+    NumberFieldInfo info;
+    if (!numberFieldInfo(component, numberEditor_.field, &info)) {
+        // The part was deleted, or undo replaced the circuit, while typing.
+        numberEditor_.open = false;
+        return;
+    }
+    if (numberEditor_.needsOpen) {
+        numberEditor_.needsOpen = false;
+        ImGui::OpenPopup("##number_editor");
+    }
+
+    const float width = std::clamp(rootSize_.x - dp(28.0f), dp(280.0f), dp(560.0f));
+    const float contentWidth = width - dp(28.0f);
+    const bool hasPrefixes = (info.prefixMaximum - info.prefixMinimum) >= 3;
+    // A fixed, compact height: with the number pad up the window is roughly
+    // halved, so the dialog must never need to scroll or shrink.
+    const float rowTitle = dp(34.0f);
+    const float rowInput = dp(48.0f);
+    const float rowHint = dp(24.0f);
+    const float rowPrefix = hasPrefixes ? dp(40.0f) : 0.0f;
+    // The size below is the window size, so the vertical padding (12 dp top and
+    // bottom) is part of it.
+    const float height = dp(24.0f) + rowTitle + rowInput + rowHint + rowPrefix;
+
+    // Anchored to the top: Android shrinks the window when the soft keyboard
+    // appears, so a bottom-anchored dialog would be buried under the keys.
+    ImGui::SetNextWindowPos(
+        ImVec2(rootMin_.x + (rootSize_.x - width) * 0.5f, safeTop_ + dp(10.0f)),
+        ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(width, height), ImGuiCond_Always);
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, Theme::toVec4(Theme::panelAlt()));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(dp(14.0f), dp(12.0f)));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(dp(8.0f), dp(6.0f)));
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration |
+                                   ImGuiWindowFlags_NoMove |
+                                   ImGuiWindowFlags_NoResize |
+                                   ImGuiWindowFlags_NoSavedSettings |
+                                   ImGuiWindowFlags_NoScrollbar |
+                                   ImGuiWindowFlags_NoScrollWithMouse;
+    if (!ImGui::BeginPopupModal("##number_editor", nullptr, flags)) {
+        ImGui::PopStyleVar(2);
+        ImGui::PopStyleColor();
+        // Dismissed with Escape or by the platform: forget the pending edit.
+        numberEditor_.open = false;
+        return;
+    }
+
+    // Live interpretation of what has been typed so far.
+    const ParsedNumber parsed = parseEngineering(numberEditor_.buffer);
+    const double prefixScale =
+        std::pow(10.0, static_cast<double>(numberEditor_.prefixExponent));
+    const double preview =
+        parsed.ok ? (parsed.hasPrefix ? parsed.value : parsed.value * prefixScale)
+                  : info.minimum;
+
+    // 确定 / 取消 live in the title row: they stay reachable even if the soft
+    // keyboard leaves very little height.
+    const auto close = [&]() {
+        numberEditor_.open = false;
+        ImGui::CloseCurrentPopup();
+    };
+    const auto commit = [&]() {
+        const ParsedNumber typed = parseEngineering(numberEditor_.buffer);
+        if (!typed.ok) {
+            numberEditor_.error = "无法识别这个数值：请输入 4700、4.7k 或 100n";
+            numberEditor_.requestFocus = true;
+            numberEditor_.selectAll = true;
+            return;
+        }
+        const double value = typed.hasPrefix ? typed.value : typed.value * prefixScale;
+        const double tolerance = std::fabs(info.maximum) * 1e-9 + 1e-12;
+        if (value < info.minimum - tolerance || value > info.maximum + tolerance) {
+            numberEditor_.error = "超出范围：" + formatSI(info.minimum, info.unit) +
+                                  " ~ " + formatSI(info.maximum, info.unit);
+            numberEditor_.requestFocus = true;
+            numberEditor_.selectAll = true;
+            return;
+        }
+        // Keep the transient inside the engine's sample budget.
+        const double points =
+            numberEditor_.field == NumberField::TransientStep
+                ? transient_.stop / std::max(1e-12, value)
+                : (numberEditor_.field == NumberField::TransientStop
+                       ? value / std::max(1e-12, transient_.step)
+                       : 0.0);
+        if (points > 200000.0) {
+            numberEditor_.error = "点数超过 200000，请放大步长或缩短时间";
+            return;
+        }
+        if (numberEditor_.componentId >= 0) {
+            pushUndo();
+        }
+        applyNumberField(numberEditor_.componentId, numberEditor_.field, value);
+        close();
+    };
+
+    const float cancelWidth = dp(76.0f);
+    const float commitWidth = dp(92.0f);
+    ImGui::SetCursorPos(ImVec2(contentWidth - cancelWidth - dp(6.0f) - commitWidth,
+                               dp(1.0f)));
+    if (accentButton("确定", ImVec2(commitWidth, dp(32.0f)))) {
+        commit();
+    }
+    ImGui::SameLine(0.0f, dp(6.0f));
+    if (ImGui::Button("取消", ImVec2(cancelWidth, dp(32.0f)))) {
+        close();
+    }
+
+    ImGui::SetCursorPos(ImVec2(0.0f, dp(2.0f)));
+    const float titleRoom =
+        std::max(dp(48.0f), contentWidth - cancelWidth - commitWidth - dp(22.0f));
+    ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 1.1f);
+    ImGui::TextUnformatted(clipText(numberEditor_.title, titleRoom * 0.5f).c_str());
+    ImGui::PopFont();
+    ImGui::SameLine(0.0f, dp(10.0f));
+    const std::string subject =
+        component ? component->name + " · " + componentInfo(component->type).label
+                  : std::string("分析设置");
+    ImGui::TextDisabled("%s", clipText(subject, titleRoom * 0.5f).c_str());
+
+    // The number itself: a plain text field, focused when the dialog opens so
+    // the keyboard appears immediately. AutoSelectAll means typing replaces the
+    // value that is already there.
+    ImGui::SetCursorPos(ImVec2(0.0f, rowTitle));
+    const float unitWidth = ImGui::CalcTextSize(numberEditor_.unit.c_str()).x;
+    ImGui::SetNextItemWidth(contentWidth - unitWidth - dp(12.0f));
+    if (numberEditor_.requestFocus) {
+        numberEditor_.requestFocus = false;
+        ImGui::SetKeyboardFocusHere();
+    }
+    ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 1.2f);
+    ImGuiInputTextFlags inputFlags = ImGuiInputTextFlags_EnterReturnsTrue;
+    if (numberEditor_.selectAll) {
+        // Typing replaces the value that is already there, but only the first
+        // time: coming back from a prefix button keeps the text intact.
+        inputFlags |= ImGuiInputTextFlags_AutoSelectAll;
+    }
+    const bool entered =
+        ImGui::InputText("##number_value", numberEditor_.buffer,
+                         sizeof(numberEditor_.buffer), inputFlags);
+    const bool edited = ImGui::IsItemEdited();
+    if (ImGui::IsItemActive()) {
+        numberEditor_.selectAll = false;
+    }
+    ImGui::PopFont();
+    ImGui::SameLine(0.0f, dp(8.0f));
+    ImGui::TextUnformatted(numberEditor_.unit.c_str());
+    if (edited) {
+        numberEditor_.error.clear();
+    }
+
+    // One status line: the interpretation of the text, or the reason it cannot
+    // be used yet.
+    ImGui::SetCursorPos(ImVec2(0.0f, rowTitle + rowInput));
+    ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 0.92f);
+    if (!numberEditor_.error.empty()) {
+        ImGui::TextColored(Theme::toVec4(Theme::danger()), "%s",
+                           numberEditor_.error.c_str());
+    } else if (!parsed.ok) {
+        ImGui::TextColored(Theme::toVec4(Theme::warning()),
+                           "请输入数值，例如 4700、4.7k、100n、1e-3");
+    } else {
+        ImGui::Text("= %s", formatSI(preview, info.unit).c_str());
+        ImGui::SameLine(0.0f, dp(10.0f));
+        ImGui::TextDisabled("范围 %s ~ %s", formatSI(info.minimum, info.unit).c_str(),
+                            formatSI(info.maximum, info.unit).c_str());
+    }
+    ImGui::PopFont();
+
+    // SI prefix buttons: on a phone this is how "4.7 kΩ" is entered without
+    // hunting for the letter k on an alphabet keyboard. A prefix typed inside
+    // the field wins over the selected button (see parseEngineering()).
+    if (hasPrefixes) {
+        const int prefixCount = (info.prefixMaximum - info.prefixMinimum) / 3 + 1;
+        const float chipWidth =
+            std::min(dp(58.0f), (contentWidth - dp(6.0f) * static_cast<float>(prefixCount - 1)) /
+                                    static_cast<float>(prefixCount));
+        ImGui::SetCursorPos(ImVec2(0.0f, rowTitle + rowInput + rowHint));
+        for (int exponent = info.prefixMinimum; exponent <= info.prefixMaximum;
+             exponent += 3) {
+            const std::string prefix = siPrefix(exponent);
+            const std::string label = prefix.empty() ? std::string("—") : prefix;
+            const ImVec2 size(chipWidth, dp(34.0f));
+            ImGui::PushID(exponent);
+            const bool clicked = exponent == numberEditor_.prefixExponent
+                                     ? accentButton(label.c_str(), size)
+                                     : ImGui::Button(label.c_str(), size);
+            ImGui::PopID();
+            if (clicked) {
+                numberEditor_.prefixExponent = exponent;
+                numberEditor_.error.clear();
+                // Tapping the button took the focus away from the field, which
+                // also hides the keyboard: take it back so typing can continue.
+                numberEditor_.requestFocus = true;
+            }
+            if (exponent + 3 <= info.prefixMaximum) {
+                ImGui::SameLine(0.0f, dp(6.0f));
+            }
+        }
+    }
+
+    if (entered) {
+        commit();
+    }
+
+    ImGui::EndPopup();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor();
+}
+
 void App::drawSelectionCard()
 {
-    if (resultsOpen_ || sheetOpen()) {
+    if (resultsOpen_ || sheetOpen() || numberEditor_.open) {
         return;
     }
     Component* component =
@@ -671,7 +1281,7 @@ void App::drawSelectionCard()
             height = dp(150.0f);
             break;
         case ComponentType::PwmSource:
-            height = dp(200.0f);
+            height = dp(204.0f);
             break;
         case ComponentType::Oscilloscope:
             height = dp(160.0f);
@@ -680,16 +1290,20 @@ void App::drawSelectionCard()
             height = dp(96.0f);
             break;
         case ComponentType::Bulb:
-        case ComponentType::Fan:
-            height = dp(232.0f);
+        case ComponentType::Fan: {
+            // Two parameters per row on a wide card, one per row on a phone
+            // held upright, so every slider and value chip stays finger sized.
+            const bool wide = (rootSize_.x - dp(16.0f)) >= dp(560.0f);
+            height = dp(wide ? 240.0f : 300.0f);
             break;
+        }
         case ComponentType::VoltageSource:
         case ComponentType::AcSource:
         case ComponentType::SignalSource:
             // A pulse source also shows the duty-cycle row; without the extra
             // height that row would be clipped and untouchable.
-            height = component->source.mode == Waveform::Pulse ? dp(200.0f)
-                                                               : dp(152.0f);
+            height = component->source.mode == Waveform::Pulse ? dp(204.0f)
+                                                               : dp(156.0f);
             break;
         case ComponentType::Switch:
             height = dp(98.0f);
@@ -795,76 +1409,84 @@ void App::drawSelectionCard()
     }
 
     const float contentY = dp(54.0f);
-    const auto valueRow = [&](double minimum, double maximum, float rowY) {
-        const double value = std::clamp(component->value, minimum, maximum);
-        float logValue = static_cast<float>(std::log10(value));
-        const float minLog = static_cast<float>(std::log10(minimum));
-        const float maxLog = static_cast<float>(std::log10(maximum));
+    const float chipHeight = dp(32.0f);
+    const float stepButtonWidth = dp(46.0f);
+    // The slider leaves room for the value chip and the two decade buttons, so
+    // the row reads "drag | type | ÷10 | ×10".
+    const auto rowSliderWidth = [&]() {
+        return std::clamp(width - dp(300.0f), dp(120.0f), dp(340.0f));
+    };
+
+    // Main value of the part: drag the slider, or tap the chip and type the
+    // exact number on the keyboard.
+    const auto valueRow = [&](float rowY) {
+        const NumberRange range = valueRange(component->type);
         ImGui::SetCursorPos(ImVec2(dp(2.0f), rowY));
-        ImGui::SetNextItemWidth(std::clamp(width - dp(250.0f), dp(140.0f), dp(360.0f)));
-        const bool changed = ImGui::SliderFloat("##value", &logValue, minLog, maxLog, "");
-        if (ImGui::IsItemActivated()) {
-            pushUndo();
-        }
-        if (changed) {
-            component->value = std::pow(10.0, static_cast<double>(logValue));
-            circuit_.touch();
-            markChanged();
-        }
+        drawFieldSlider(component->id, NumberField::Value, rowSliderWidth());
         ImGui::SameLine(0.0f, dp(8.0f));
-        ImGui::TextUnformatted(componentValueLabel(*component).c_str());
+        drawValueChip("##value_chip", component->id, NumberField::Value,
+                      formatSI(component->value, valueUnit(component->type)),
+                      ImVec2(dp(88.0f), chipHeight));
         ImGui::SameLine(0.0f, dp(8.0f));
-        if (ImGui::Button("÷10", ImVec2(dp(48.0f), dp(32.0f)))) {
+        if (ImGui::Button("÷10", ImVec2(stepButtonWidth, chipHeight))) {
             pushUndo();
-            component->value = std::max(minimum, component->value / 10.0);
-            circuit_.touch();
-            markChanged();
+            applyNumberField(component->id, NumberField::Value,
+                             std::max(range.minimum, component->value / 10.0));
         }
         ImGui::SameLine(0.0f, dp(6.0f));
-        if (ImGui::Button("×10", ImVec2(dp(48.0f), dp(32.0f)))) {
+        if (ImGui::Button("×10", ImVec2(stepButtonWidth, chipHeight))) {
             pushUndo();
-            component->value = std::min(maximum, component->value * 10.0);
-            circuit_.touch();
-            markChanged();
+            applyNumberField(component->id, NumberField::Value,
+                             std::min(range.maximum, component->value * 10.0));
         }
     };
 
     // Series resistance (winding DCR or capacitor ESR) of a real filter part.
-    const auto seriesRow = [&](double minimum, double maximum, float rowY) {
-        const double value = std::clamp(component->seriesR, minimum, maximum);
-        float logValue = static_cast<float>(std::log10(std::max(minimum, value)));
+    const auto seriesRow = [&](float rowY) {
         ImGui::SetCursorPos(ImVec2(dp(2.0f), rowY));
-        ImGui::SetNextItemWidth(std::clamp(width - dp(250.0f), dp(140.0f), dp(360.0f)));
-        const bool changed = ImGui::SliderFloat(
-            "##seriesR", &logValue, static_cast<float>(std::log10(minimum)),
-            static_cast<float>(std::log10(maximum)), "");
-        if (ImGui::IsItemActivated()) {
-            pushUndo();
-        }
-        if (changed) {
-            component->seriesR = std::pow(10.0, static_cast<double>(logValue));
-            circuit_.touch();
-            markChanged();
-        }
+        drawFieldSlider(component->id, NumberField::SeriesR, rowSliderWidth());
         ImGui::SameLine(0.0f, dp(8.0f));
-        ImGui::Text("内阻 %s", formatSI(component->seriesR, "Ω").c_str());
+        drawValueChip("##seriesr_chip", component->id, NumberField::SeriesR,
+                      formatSI(component->seriesR, "Ω"), ImVec2(dp(88.0f), chipHeight));
         ImGui::SameLine(0.0f, dp(8.0f));
-        ImGui::TextDisabled(component->type == ComponentType::PowerInductor ? "DCR"
-                                                                           : "ESR");
+        ImGui::TextDisabled(component->type == ComponentType::PowerInductor ? "内阻 DCR"
+                                                                           : "内阻 ESR");
+    };
+
+    // One labelled parameter row: slider plus its exact-entry chip.
+    const auto fieldRow = [&](NumberField field, const char* label, float x, float rowY,
+                              float rowWidth) {
+        NumberFieldInfo info;
+        if (!numberFieldInfo(component, field, &info)) {
+            return;
+        }
+        ImGui::SetCursorPos(ImVec2(x, rowY));
+        ImGui::TextDisabled("%s", label);
+        ImGui::SameLine(0.0f, dp(6.0f));
+        const float labelWidth = ImGui::CalcTextSize(label).x;
+        const float chipWidth = dp(88.0f);
+        const float sliderWidth =
+            std::clamp(rowWidth - labelWidth - chipWidth - dp(26.0f), dp(80.0f), dp(300.0f));
+        drawFieldSlider(component->id, field, sliderWidth);
+        ImGui::SameLine(0.0f, dp(6.0f));
+        char chipId[32];
+        std::snprintf(chipId, sizeof(chipId), "##chip%d", static_cast<int>(field));
+        drawValueChip(chipId, component->id, field,
+                      formatSI(info.value, info.unit), ImVec2(chipWidth, chipHeight));
     };
 
     if (component->type == ComponentType::Resistor) {
-        valueRow(1.0, 1e7, contentY);
+        valueRow(contentY);
     } else if (component->type == ComponentType::Capacitor) {
-        valueRow(1e-12, 1e-2, contentY);
+        valueRow(contentY);
     } else if (component->type == ComponentType::Inductor) {
-        valueRow(1e-9, 1.0, contentY);
+        valueRow(contentY);
     } else if (component->type == ComponentType::PowerInductor) {
-        valueRow(1e-9, 1.0, contentY);
-        seriesRow(1e-3, 1e2, contentY + dp(40.0f));
+        valueRow(contentY);
+        seriesRow(contentY + dp(40.0f));
     } else if (component->type == ComponentType::ElectrolyticCap) {
-        valueRow(1e-7, 1e-1, contentY);
-        seriesRow(1e-3, 1e2, contentY + dp(40.0f));
+        valueRow(contentY);
+        seriesRow(contentY + dp(40.0f));
     } else if (component->type == ComponentType::Oscilloscope) {
         ImGui::SetCursorPos(ImVec2(dp(2.0f), contentY));
         ImGui::TextDisabled("探头输入 1 MΩ，与地构成差分测量");
@@ -890,90 +1512,39 @@ void App::drawSelectionCard()
         ImGui::SetCursorPos(ImVec2(dp(2.0f), contentY));
         ImGui::TextDisabled("两只螺丝互不相连，仅用来标记板级接口");
     } else if (isLoadType(component->type)) {
-        valueRow(1.0, 1e7, contentY);
+        valueRow(contentY);
 
         // Realistic load ratings: nominal voltage, start-up voltage, maximum
-        // voltage (e.g. a fan tolerates +10 %) and maximum current.
+        // voltage (e.g. a fan tolerates +10 %) and maximum current. Each one is
+        // a slider plus its exact-entry chip; a narrow (portrait) card gives
+        // every parameter its own row, a wide one puts two side by side.
         const bool fan = component->type == ComponentType::Fan;
-        const float row1 = contentY + dp(40.0f);
-        const float row2 = row1 + dp(38.0f);
-        const float row3 = row2 + dp(38.0f);
-
-        ImGui::SetCursorPos(ImVec2(dp(2.0f), row1));
-        ImGui::TextDisabled("额定");
-        ImGui::SameLine(0.0f, dp(6.0f));
-        ImGui::SetNextItemWidth(dp(118.0f));
-        float rated = static_cast<float>(std::clamp(component->ratedVoltage, 1.0, 48.0));
-        const bool ratedChanged = ImGui::SliderFloat("##rated", &rated, 1.0f, 48.0f, "%.1f V");
-        if (ImGui::IsItemActivated()) {
-            pushUndo();
+        struct LoadParameter {
+            NumberField field;
+            const char* label;
+        };
+        static const LoadParameter kLoadParameters[] = {
+            {NumberField::RatedVoltage, "额定"},
+            {NumberField::MinVoltage, "启动"},
+            {NumberField::MaxVoltage, "上限"},
+            {NumberField::MaxCurrent, "电流上限"},
+        };
+        const bool twoColumns = width >= dp(560.0f);
+        const float rowHeight = dp(40.0f);
+        const float gridTop = contentY + dp(40.0f);
+        const float columnWidth = (width - dp(24.0f)) * 0.5f;
+        int index = 0;
+        for (const LoadParameter& parameter : kLoadParameters) {
+            const int column = twoColumns ? index % 2 : 0;
+            const int line = twoColumns ? index / 2 : index;
+            fieldRow(parameter.field, parameter.label,
+                     dp(2.0f) + columnWidth * static_cast<float>(column),
+                     gridTop + rowHeight * static_cast<float>(line),
+                     twoColumns ? columnWidth : width - dp(24.0f));
+            ++index;
         }
-        if (ratedChanged) {
-            // Keep the start-up / maximum limits in proportion to the rating.
-            const double previous = std::max(0.1, component->ratedVoltage);
-            const double scale = static_cast<double>(rated) / previous;
-            component->ratedVoltage = rated;
-            component->minVoltage *= scale;
-            component->maxVoltage *= scale;
-            applyLoadDefaults(*component);
-            circuit_.touch();
-            markChanged();
-        }
-        ImGui::SameLine(0.0f, dp(14.0f));
-        ImGui::TextDisabled("启动");
-        ImGui::SameLine(0.0f, dp(6.0f));
-        ImGui::SetNextItemWidth(dp(118.0f));
-        float start = static_cast<float>(
-            std::clamp(component->minVoltage, 0.5, std::max(0.6, component->ratedVoltage)));
-        const bool startChanged = ImGui::SliderFloat(
-            "##minv", &start, 0.5f, static_cast<float>(std::max(1.0, component->ratedVoltage)),
-            "%.1f V");
-        if (ImGui::IsItemActivated()) {
-            pushUndo();
-        }
-        if (startChanged) {
-            component->minVoltage = start;
-            circuit_.touch();
-            markChanged();
-        }
-
-        ImGui::SetCursorPos(ImVec2(dp(2.0f), row2));
-        ImGui::TextDisabled("上限");
-        ImGui::SameLine(0.0f, dp(6.0f));
-        ImGui::SetNextItemWidth(dp(118.0f));
-        const float maxLimit = static_cast<float>(std::max(component->ratedVoltage * 2.0, 2.0));
-        const float minLimit = static_cast<float>(std::max(component->ratedVoltage * 0.5, 1.0));
-        float maxVolts = static_cast<float>(
-            std::clamp(component->maxVoltage, static_cast<double>(minLimit),
-                       static_cast<double>(maxLimit)));
-        const bool maxChanged =
-            ImGui::SliderFloat("##maxv", &maxVolts, minLimit, maxLimit, "%.1f V");
-        if (ImGui::IsItemActivated()) {
-            pushUndo();
-        }
-        if (maxChanged) {
-            component->maxVoltage = maxVolts;
-            component->maxCurrent = std::max(component->maxCurrent, 0.0);
-            circuit_.touch();
-            markChanged();
-        }
-        ImGui::SameLine(0.0f, dp(14.0f));
-        ImGui::TextDisabled("电流上限");
-        ImGui::SameLine(0.0f, dp(6.0f));
-        ImGui::SetNextItemWidth(dp(118.0f));
-        float maxAmps = static_cast<float>(std::max(0.01, component->maxCurrent));
-        float logAmps = std::log10(maxAmps);
-        const bool ampsChanged = ImGui::SliderFloat("##maxa", &logAmps, -2.0f, 1.3f, "");
-        if (ImGui::IsItemActivated()) {
-            pushUndo();
-        }
-        if (ampsChanged) {
-            component->maxCurrent = std::pow(10.0, static_cast<double>(logAmps));
-            circuit_.touch();
-            markChanged();
-        }
-        ImGui::SameLine(0.0f, dp(8.0f));
-        ImGui::TextUnformatted(formatSI(component->maxCurrent, "A").c_str());
+        const int gridLines = twoColumns ? 2 : 4;
+        const float row3 = gridTop + rowHeight * static_cast<float>(gridLines) + dp(4.0f);
 
         ImGui::SetCursorPos(ImVec2(dp(2.0f), row3));
         ImGui::TextDisabled("额定 %s · %s · %s", formatSI(component->ratedVoltage, "V").c_str(),
@@ -1059,86 +1630,51 @@ void App::drawSelectionCard()
             markChanged();
         }
         ImGui::SameLine(0.0f, dp(8.0f));
-        ImGui::SetNextItemWidth(dp(120.0f));
-        float amplitude = static_cast<float>(component->source.amplitude);
-        const bool amplitudeChanged =
-            ImGui::SliderFloat("##amp", &amplitude, 0.0f, 20.0f, "%.2f V");
-        if (ImGui::IsItemActivated()) {
-            pushUndo();
-        }
-        if (amplitudeChanged) {
-            component->source.amplitude = amplitude;
-            if (component->source.mode == Waveform::DC) {
-                component->source.dc = amplitude;
-            }
-            component->value = amplitude;
-            circuit_.touch();
-            markChanged();
-        }
+        drawFieldSlider(component->id, NumberField::Amplitude, dp(120.0f));
+        ImGui::SameLine(0.0f, dp(6.0f));
+        drawValueChip("##amplitude_chip", component->id, NumberField::Amplitude,
+                      formatSI(component->source.amplitude, "V"),
+                      ImVec2(dp(76.0f), chipHeight));
         if (component->source.mode != Waveform::DC) {
             ImGui::SetCursorPos(ImVec2(dp(2.0f), contentY + dp(38.0f)));
-            ImGui::SetNextItemWidth(dp(180.0f));
-            float frequency =
-                static_cast<float>(std::max(1.0, component->source.frequency));
-            float logFrequency = std::log10(frequency);
-            const bool frequencyChanged =
-                ImGui::SliderFloat("##freq", &logFrequency, 0.0f, 6.0f, "");
-            if (ImGui::IsItemActivated()) {
-                pushUndo();
-            }
-            if (frequencyChanged) {
-                component->source.frequency =
-                    std::pow(10.0, static_cast<double>(logFrequency));
-                component->source.period =
-                    1.0 / std::max(1e-9, component->source.frequency);
-                component->source.pulseWidth =
-                    pulseWidthFor(component->source.period, component->source.duty);
-                component->source.rise = pulseRiseFor(component->source.period);
-                circuit_.touch();
-                markChanged();
-            }
-            ImGui::SameLine(0.0f, dp(8.0f));
-            ImGui::TextUnformatted(formatSI(component->source.frequency, "Hz").c_str());
+            drawFieldSlider(component->id, NumberField::Frequency, dp(150.0f));
+            ImGui::SameLine(0.0f, dp(6.0f));
+            drawValueChip("##frequency_chip", component->id, NumberField::Frequency,
+                          formatSI(component->source.frequency, "Hz"),
+                          ImVec2(dp(88.0f), chipHeight));
 
             if (component->source.mode == Waveform::Pulse) {
-                // Duty cycle is edited as a whole percentage: a 0..1 float with
-                // a "%.0f%%" format used to round 0.5 to "0%" and looked like a
-                // dead control.
-                const auto applyDuty = [&](double value) {
-                    component->source.duty = std::clamp(value, 0.01, 0.99);
-                    component->source.pulseWidth = pulseWidthFor(
-                        component->source.period, component->source.duty);
-                    circuit_.touch();
-                    markChanged();
+                // Duty cycle is edited as a percentage: a 0..1 float with a
+                // "%.0f%%" format used to round 0.5 to "0%" and looked like a
+                // dead control. Fractional values are allowed here, so 33.3 %
+                // is exactly 33.3 %.
+                const auto applyDuty = [&](double percent) {
+                    applyNumberField(component->id, NumberField::Duty, percent);
                 };
                 ImGui::SetCursorPos(ImVec2(dp(2.0f), contentY + dp(76.0f)));
-                ImGui::SetNextItemWidth(dp(150.0f));
-                int dutyPercent = static_cast<int>(
-                    std::lround(std::clamp(component->source.duty, 0.01, 0.99) * 100.0));
-                const bool dutyChanged =
-                    ImGui::SliderInt("##duty", &dutyPercent, 1, 99, "占空比 %d%%");
-                if (ImGui::IsItemActivated()) {
+                drawFieldSlider(component->id, NumberField::Duty, dp(120.0f));
+                ImGui::SameLine(0.0f, dp(6.0f));
+                drawValueChip("##duty_chip", component->id, NumberField::Duty,
+                              formatSI(component->source.duty * 100.0, "%"),
+                              ImVec2(dp(76.0f), chipHeight));
+                ImGui::SameLine(0.0f, dp(6.0f));
+                if (ImGui::Button("-5%", ImVec2(dp(50.0f), chipHeight))) {
                     pushUndo();
-                }
-                if (dutyChanged) {
-                    applyDuty(static_cast<double>(dutyPercent) / 100.0);
-                }
-                ImGui::SameLine(0.0f, dp(8.0f));
-                if (ImGui::Button("-5%", ImVec2(dp(50.0f), dp(32.0f)))) {
-                    pushUndo();
-                    applyDuty(component->source.duty - 0.05);
+                    applyDuty(component->source.duty * 100.0 - 5.0);
                 }
                 ImGui::SameLine(0.0f, dp(6.0f));
-                if (ImGui::Button("+5%", ImVec2(dp(50.0f), dp(32.0f)))) {
+                if (ImGui::Button("+5%", ImVec2(dp(50.0f), chipHeight))) {
                     pushUndo();
-                    applyDuty(component->source.duty + 0.05);
+                    applyDuty(component->source.duty * 100.0 + 5.0);
                 }
-                ImGui::SameLine(0.0f, dp(8.0f));
-                ImGui::TextDisabled("平均 %s",
-                                    formatSI(component->source.amplitude *
-                                                 component->source.duty,
-                                             "V")
-                                        .c_str());
+                if (width >= dp(600.0f)) {
+                    ImGui::SameLine(0.0f, dp(8.0f));
+                    ImGui::TextDisabled("平均 %s",
+                                        formatSI(component->source.amplitude *
+                                                     component->source.duty,
+                                                 "V")
+                                            .c_str());
+                }
             }
         }
     } else if (component->type == ComponentType::Diode ||
@@ -1151,18 +1687,10 @@ void App::drawSelectionCard()
         ImGui::TextUnformatted(componentValueLabel(*component).c_str());
         if (component->type == ComponentType::Zener) {
             ImGui::SetCursorPos(ImVec2(dp(2.0f), contentY + dp(32.0f)));
-            float breakdown = static_cast<float>(std::clamp(component->value, 2.4, 24.0));
-            ImGui::SetNextItemWidth(std::clamp(width - dp(250.0f), dp(140.0f), dp(360.0f)));
-            const bool changed =
-                ImGui::SliderFloat("##bv", &breakdown, 2.4f, 24.0f, "稳压 %.1f V");
-            if (ImGui::IsItemActivated()) {
-                pushUndo();
-            }
-            if (changed) {
-                component->value = breakdown;
-                circuit_.touch();
-                markChanged();
-            }
+            drawFieldSlider(component->id, NumberField::Value, rowSliderWidth());
+            ImGui::SameLine(0.0f, dp(8.0f));
+            drawValueChip("##zener_chip", component->id, NumberField::Value,
+                          formatSI(component->value, "V"), ImVec2(dp(88.0f), chipHeight));
         }
         if (live_) {
             double current = 0.0;

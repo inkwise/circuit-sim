@@ -19,6 +19,7 @@
 #include "imgui_impl_sdlrenderer3.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <map>
 #include <string>
 
@@ -71,6 +72,74 @@ void updateSafeInsets(SDL_Window* window, circuitlab::App& app)
     app.setSafeInsets(static_cast<float>(safe.x), static_cast<float>(safe.y),
                       static_cast<float>(std::max(0, width - (safe.x + safe.w))),
                       static_cast<float>(std::max(0, height - (safe.y + safe.h))));
+}
+
+// ---------------------------------------------------------------------------
+// Numeric on-screen keyboard
+//
+// Parameter values are numbers, so the soft keyboard should be a number pad
+// (with "." and "-") rather than the alphabet keyboard. ImGui only asks SDL to
+// start text input, which would raise the default keyboard, so the numeric
+// entry field starts it first with an Android numeric input type; the ImGui SDL3
+// backend then skips its own start because text input is already active. If the
+// request fails for any reason the backend falls back to the normal keyboard, and
+// the value field keeps working.
+// ---------------------------------------------------------------------------
+
+using PlatformImeDataFn = void (*)(ImGuiContext*, ImGuiViewport*, ImGuiPlatformImeData*);
+
+bool g_wantsNumericTextInput = false;
+bool g_numericTextInputRequested = false;
+PlatformImeDataFn g_defaultPlatformImeData = nullptr;
+
+void startNumericTextInput(const ImGuiPlatformImeData& data)
+{
+#ifdef __ANDROID__
+    SDL_Window* window = SDL_GetKeyboardFocus();
+    if (!window) {
+        return;
+    }
+    // android.text.InputType: TYPE_CLASS_NUMBER | TYPE_NUMBER_FLAG_DECIMAL |
+    // TYPE_NUMBER_FLAG_SIGNED.
+    constexpr int64_t kNumericInputType = 0x00003002;
+    SDL_Rect area;
+    area.x = static_cast<int>(data.InputPos.x);
+    area.y = static_cast<int>(data.InputPos.y);
+    area.w = 1;
+    area.h = static_cast<int>(std::max(1.0f, data.InputLineHeight));
+    SDL_SetTextInputArea(window, &area, 0);
+
+    const SDL_PropertiesID properties = SDL_CreateProperties();
+    if (properties == 0) {
+        return;
+    }
+    SDL_SetNumberProperty(properties, SDL_PROP_TEXTINPUT_ANDROID_INPUTTYPE_NUMBER,
+                          kNumericInputType);
+    if (!SDL_StartTextInputWithProperties(window, properties)) {
+        SDL_Log("Numeric keyboard unavailable, using the system keyboard: %s",
+                SDL_GetError());
+    }
+    SDL_DestroyProperties(properties);
+#else
+    (void)data;
+#endif
+}
+
+// Wraps the backend handler: the numeric pad is requested once per field, and
+// the backend still receives every IME update (cursor position, stop requests).
+void platformImeDataHandler(ImGuiContext* ctx, ImGuiViewport* viewport,
+                            ImGuiPlatformImeData* data)
+{
+    const bool wantsTextInput = data->WantVisible || data->WantTextInput;
+    if (!wantsTextInput) {
+        g_numericTextInputRequested = false;
+    } else if (g_wantsNumericTextInput && !g_numericTextInputRequested) {
+        g_numericTextInputRequested = true;
+        startNumericTextInput(*data);
+    }
+    if (g_defaultPlatformImeData) {
+        g_defaultPlatformImeData(ctx, viewport, data);
+    }
 }
 
 }  // namespace
@@ -146,6 +215,11 @@ int main(int /*argc*/, char* /*argv*/[])
         SDL_Quit();
         return 1;
     }
+
+    // Numeric parameter fields ask for a number pad instead of the alphabet
+    // keyboard; the wrapped handler calls the SDL3 backend handler afterwards.
+    g_defaultPlatformImeData = ImGui::GetPlatformIO().Platform_SetImeDataFn;
+    ImGui::GetPlatformIO().Platform_SetImeDataFn = platformImeDataHandler;
 
     int windowWidth = 0;
     int windowHeight = 0;
@@ -232,6 +306,11 @@ int main(int /*argc*/, char* /*argv*/[])
         ImGui_ImplSDL3_NewFrame();
         ImGui::NewFrame();
         app.frame();
+        // Read before Render(): the IME handler runs inside ImGui::Render().
+        g_wantsNumericTextInput = app.wantsNumericKeyboard();
+        if (!g_wantsNumericTextInput) {
+            g_numericTextInputRequested = false;
+        }
         ImGui::Render();
 
         SDL_SetRenderDrawColor(renderer, 16, 20, 27, 255);
