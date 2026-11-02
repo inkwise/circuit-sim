@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Simple circuit loop with a resistor and two nodes. -->
+    <path
+        android:strokeColor="#4CC9F0"
+        android:strokeWidth="4"
+        android:fillColor="#00000000"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M28,36 L28,54 L44,54 L50,46 L58,62 L66,46 L72,54 L80,54 L80,36" />
+    <path
+        android:strokeColor="#F4A261"
+        android:strokeWidth="4"
+        android:fillColor="#00000000"
+        android:strokeLineCap="round"
+        android:pathData="M28,72 L80,72" />
+    <path
+        android:fillColor="#4CC9F0"
+        android:pathData="M28,32 A4,4 0 1,1 27.99,32 Z" />
+    <path
+        android:fillColor="#4CC9F0"
+        android:pathData="M80,32 A4,4 0 1,1 79.99,32 Z" />
+    <path
+        android:fillColor="#F4A261"
+        android:pathData="M28,68 A4,4 0 1,1 27.99,68 Z" />
+    <path
+        android:fillColor="#F4A261"
+        android:pathData="M80,68 A4,4 0 1,1 79.99,68 Z" />
+</vector>

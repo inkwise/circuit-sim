@@ -1,0 +1,221 @@
+#pragma once
+
+#include <array>
+#include <string>
+#include <vector>
+
+namespace circuitlab {
+
+struct Point {
+    int x = 0;
+    int y = 0;
+};
+
+inline bool operator==(const Point& a, const Point& b) { return a.x == b.x && a.y == b.y; }
+inline bool operator!=(const Point& a, const Point& b) { return !(a == b); }
+
+// Upper bound for every component, including the 8-pin 555.
+constexpr int kMaxComponentPins = 8;
+
+// The catalog array in ComponentCatalog.cpp is indexed by this enum, so the
+// order here must stay in sync with the order of the catalog entries.
+enum class ComponentType {
+    Resistor,
+    Capacitor,
+    Inductor,
+    VoltageSource,   // DC source by default, may use another waveform
+    AcSource,        // mains-style sinusoidal source
+    SignalSource,    // bench signal generator (sine / square)
+    Switch,
+    Bulb,
+    Fan,
+    Ground,
+    Diode,
+    Led,
+    Zener,
+    Npn,
+    Pnp,
+    Nmos,
+    OpAmp,
+    Timer555,
+    GateAnd,
+    GateOr,
+    GateNot,
+    Regulator7805,
+    // Switching-regulator parts: a PWM driven power switch, its freewheel
+    // diode and the LC filter that turns the chopped rail into a DC rail.
+    PowerInductor,   // inductor with winding resistance (L + DCR)
+    ElectrolyticCap, // bulk capacitor with equivalent series resistance
+    PwmSource,       // PWM generator with an adjustable duty cycle
+    PowerNmos,       // logic-level power N-MOSFET (low-side switch)
+    PowerPmos,       // power P-MOSFET (high-side switch)
+    SchottkyDiode,   // low forward-drop freewheel diode
+    // Instruments and connectors.
+    Oscilloscope,    // 1 MΩ differential probe with ripple statistics
+    TerminalBlock,   // 2-pin screw terminal (electrically a short)
+};
+
+enum class Waveform {
+    DC,
+    Sine,
+    Pulse,
+};
+
+struct SourceSpec {
+    Waveform mode = Waveform::DC;
+    double dc = 5.0;          // DC value / sine offset / pulse low level
+    double amplitude = 5.0;   // sine amplitude / pulse high level
+    double frequency = 1000.0;
+    double rise = 1e-6;
+    double pulseWidth = 10e-3;
+    double period = 20e-3;
+    // Duty cycle of a pulse source. It is authoritative in the UI and is kept
+    // in sync with pulseWidth = duty * period.
+    double duty = 0.5;
+};
+
+struct Component {
+    int id = 0;
+    ComponentType type = ComponentType::Resistor;
+    std::string name;
+    double value = 1000.0;    // R (ohm), C (F), L (H); unused for sources/ground
+    SourceSpec source;
+    bool switchClosed = true;
+    double ratedVoltage = 0.0;  // loads only: nominal voltage (full brightness/speed)
+    // Load ratings, modelled on real parts: below `minVoltage` the part does not
+    // start, above `maxVoltage` (overvoltage) or `maxCurrent` (overcurrent) it is
+    // destroyed. `maxVoltage` is what "a fan may be overdriven by 10%" means.
+    double minVoltage = 0.0;
+    double maxVoltage = 0.0;
+    double maxCurrent = 0.0;
+    bool damaged = false;       // loads only: open after a fault; recoverable
+    bool damagedByCurrent = false;  // true when the fault was overcurrent
+    // Series resistance of a real part: winding resistance of a power inductor
+    // (DCR) or the ESR of an electrolytic capacitor. 0 means ideal.
+    double seriesR = 0.0;
+    int gridX = 0;
+    int gridY = 0;
+    int rotation = 0;         // 0, 90, 180, 270
+};
+
+struct Wire {
+    int id = 0;
+    std::vector<Point> points;
+};
+
+// Number of electrical pins (ground has one).
+int pinCount(ComponentType type);
+
+// World/grid coordinates of each pin, in netlist order. `out` must have room
+// for kMaxComponentPins entries. Returns the number of pins written.
+int componentPins(const Component& component, Point out[kMaxComponentPins]);
+
+// Axis-aligned bounds in grid units, with a small margin for the symbol body.
+void componentBounds(const Component& component, Point* minOut, Point* maxOut);
+
+const char* componentPrefix(ComponentType type);
+const char* componentTypeKey(ComponentType type);   // stable English key for files
+bool componentTypeFromKey(const std::string& key, ComponentType* out);
+const char* waveformKey(Waveform waveform);
+bool waveformFromKey(const std::string& key, Waveform* out);
+
+bool isSourceType(ComponentType type);
+// True for the visual loads (bulb, fan).
+bool isLoadType(ComponentType type);
+// Fills the load ratings (start-up / maximum voltage / maximum current) with
+// realistic defaults when they are missing, e.g. for projects saved before the
+// ratings existed.
+void applyLoadDefaults(Component& component);
+
+// Why a load failed; None means it is operating inside its ratings.
+enum class LoadFault {
+    None,
+    OverVoltage,
+    OverCurrent,
+};
+
+// Fault a load would suffer at this terminal voltage and current.
+LoadFault loadFault(const Component& component, double voltage, double current);
+
+// Operating level of a load, 0..1. It is 0 below the start-up voltage, follows
+// the electrical power above it and saturates at the nominal point, so a lamp
+// dims smoothly and a motor spins up with voltage.
+double loadLevel(const Component& component, double voltage);
+
+// Nominal current (ratedVoltage / value) and nominal power, for display.
+double loadRatedCurrent(const Component& component);
+double loadRatedPower(const Component& component);
+
+// True for the measuring probe (oscilloscope with a 1 MΩ input).
+bool isProbeType(ComponentType type);
+// True for connectors / terminal blocks, which are modelled as a short.
+bool isConnectorType(ComponentType type);
+// Clears overvoltage damage on all loads and bumps the revision when anything
+// was restored. Returns the number of recovered loads.
+struct Circuit;
+int clearLoadDamage(Circuit& circuit);
+// True for devices represented by a SPICE resistor (R, switch, bulb, fan).
+bool isResistiveType(ComponentType type);
+// Resistance used by the netlist / current fallback. Switches are nearly a
+// short when closed and nearly open when open.
+double componentResistance(const Component& component);
+
+// Round a world coordinate to the nearest grid point.
+Point snapPoint(float x, float y);
+
+struct Circuit {
+    std::vector<Component> components;
+    std::vector<Wire> wires;
+    int revision = 0;
+    int nextComponentId = 1;
+    int nextWireId = 1;
+
+    void clear();
+    bool empty() const { return components.empty() && wires.empty(); }
+
+    Component* findComponent(int id);
+    const Component* findComponent(int id) const;
+    Wire* findWire(int id);
+    const Wire* findWire(int id) const;
+
+    // Adds a component with an auto-generated name (R1, C1, V1, ...).
+    int addComponent(ComponentType type, int gridX, int gridY);
+    int addWire(Point a, Point b);
+    int addWirePoints(std::vector<Point> points);
+
+    void removeComponent(int id);   // also removes wires attached to its pins
+    void removeWire(int id);
+
+    // Moves the component and follows wire endpoints that were attached to its
+    // old pin positions.
+    bool moveComponent(int id, int newGridX, int newGridY);
+    // Rotates 90 degrees and follows attached wire endpoints.
+    bool rotateComponent(int id);
+
+    void touch() { ++revision; }
+
+private:
+    std::string uniqueName(ComponentType type) const;
+    void followPins(int componentId, const Point oldPins[kMaxComponentPins],
+                    int oldCount, const Point newPins[kMaxComponentPins],
+                    int newCount);
+    static void normalizeWire(Wire& wire);
+};
+
+// Two wires whose bodies cross without touching electrically. The wire that was
+// added first is drawn straight; the later one hops over the crossing point, so
+// the schematic never suggests a connection that does not exist.
+struct WireCrossing {
+    int straightWireId = 0;   // earlier wire, drawn straight through
+    int hoppingWireId = 0;    // later wire, drawn with a bridge over the point
+    int straightWireIndex = 0;
+    int hoppingWireIndex = 0;
+    Point point;
+};
+
+// Finds every interior/interior intersection between two wires. Endpoint
+// contacts (T junctions) and coincident vertices are real connections and are
+// deliberately not reported.
+std::vector<WireCrossing> findWireCrossings(const Circuit& circuit);
+
+}  // namespace circuitlab

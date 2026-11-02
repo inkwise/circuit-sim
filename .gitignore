@@ -1,0 +1,36 @@
+# ---- 构建产物 ----
+/build/
+/dist/
+/core/build/
+/ui/build/
+out/
+*.apk
+*.aab
+*.o
+*.a
+
+# ---- Android ----
+/android/.gradle/
+/android/build/
+/android/.cxx/
+/android/app/build/
+/android/app/.cxx/
+/android/local.properties
+# libngspice.so 由 scripts/build-ngspice-android.sh 生成
+/android/app/src/main/jniLibs/
+*.jks
+*.keystore
+
+# ---- 第三方依赖（scripts/fetch-deps.sh 可重新拉取）----
+/third_party/
+/third_party/downloads/
+
+# ---- 日志与临时文件 ----
+*.log
+logcat-*.txt
+logcat-*.log
+__pycache__/
+*.pyc
+.DS_Store
+.idea/
+.vscode/
