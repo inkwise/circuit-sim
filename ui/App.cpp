@@ -2,6 +2,7 @@
 
 #include "Theme.h"
 
+#include "circuit/ComponentCatalog.h"
 #include "circuit/Engineering.h"
 #include "circuit/Examples.h"
 #include "circuit/ProjectIO.h"
@@ -91,6 +92,8 @@ std::string projectTimestamp(long long seconds)
 
 // Name of the example project the app ships with, and the marker that keeps it
 // from being re-created after the user deletes it.
+// Shown in the settings panel so a stale APK on the phone is easy to spot.
+const char* kAppVersion = "0.2.0";
 const char* kMosExampleName = "MOS 开关板示例";
 const char* kTecExampleName = "制冷片示例 TEC1-12706";
 const char* kExampleHint =
@@ -1394,8 +1397,12 @@ void App::drawSettingsPopup()
     ImGui::PopTextWrapPos();
     ImGui::TextDisabled("界面帧率 %.0f fps", ImGui::GetIO().Framerate);
     ImGui::SameLine(0.0f, dp(12.0f));
-    // Build stamp: makes it obvious which APK is actually installed.
-    ImGui::TextDisabled("版本 0.1.0 · 构建 %s %s", __DATE__, __TIME__);
+    // Build stamp: makes it obvious which APK is actually installed. Keep
+    // kAppVersion in sync with android/app/build.gradle.
+    ImGui::TextDisabled("版本 %s · 构建 %s %s", kAppVersion, __DATE__, __TIME__);
+    ImGui::TextDisabled("元件库 %d 种（晶体管 %d 种）",
+                        static_cast<int>(allComponentTypes().size()),
+                        static_cast<int>(componentsIn(ComponentCategory::Transistor).size()));
     ImGui::Separator();
 
     const ImVec2 size(dp(140.0f), dp(44.0f));

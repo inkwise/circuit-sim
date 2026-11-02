@@ -68,8 +68,11 @@ bash scripts/build-apk.sh
 APK 输出：
 
 ```
-dist/CircuitLab-0.1.0-debug.apk
+dist/CircuitLab-0.2.0-debug.apk
 ```
+
+装完可以到 **顶部菜单 → 设置** 最下面确认：`版本 0.2.0 · 构建 <编译时间>`，
+以及 `元件库 35 种（晶体管 6 种）`。这两个数字对不上就说明手机上还是旧包。
 
 ## 安装
 
@@ -77,7 +80,7 @@ dist/CircuitLab-0.1.0-debug.apk
 bash scripts/install-apk.sh
 # 等价于：
 termux-open --content-type application/vnd.android.package-archive \
-  dist/CircuitLab-0.1.0-debug.apk
+  dist/CircuitLab-0.2.0-debug.apk
 ```
 
 设备需要允许“安装未知应用”。
