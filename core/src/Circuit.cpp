@@ -566,8 +566,28 @@ bool isLoadType(ComponentType type)
            isThermoelectricType(type);
 }
 
+bool isBurnableType(ComponentType type)
+{
+    // A wirewound / cement resistor has no voltage or current rating; what
+    // destroys it is dissipating more than its power rating.
+    return isLoadType(type) || type == ComponentType::PowerResistor;
+}
+
 void applyLoadDefaults(Component& component)
 {
+    if (component.type == ComponentType::PowerResistor) {
+        // Rated purely by power: no start-up voltage, no voltage or current
+        // limit, so only the wattage can burn it.
+        component.ratedVoltage = 0.0;
+        component.minVoltage = 0.0;
+        component.maxVoltage = 0.0;
+        component.maxCurrent = 0.0;
+        if (!(component.ratedPower > 0.0)) {
+            component.ratedPower = 2.0;
+        }
+        component.ratedCurrent = component.ratedVoltage > 0.0 ? 0.0 : 0.0;
+        return;
+    }
     if (!isLoadType(component.type)) {
         return;
     }
@@ -677,7 +697,14 @@ void setLoadRatedPower(Component& component, double watts)
 
 LoadFault loadFault(const Component& component, double voltage, double current)
 {
-    if (!isLoadType(component.type)) {
+    if (!isBurnableType(component.type)) {
+        return LoadFault::None;
+    }
+    if (component.type == ComponentType::PowerResistor) {
+        if (component.ratedPower > 0.0 &&
+            std::fabs(voltage * current) > component.ratedPower * 1.02) {
+            return LoadFault::OverPower;
+        }
         return LoadFault::None;
     }
     const double magnitude = std::fabs(voltage);
@@ -748,7 +775,7 @@ int clearLoadDamage(Circuit& circuit)
 {
     int restored = 0;
     for (auto& component : circuit.components) {
-        if (isLoadType(component.type) && component.damaged) {
+        if (isBurnableType(component.type) && component.damaged) {
             component.damaged = false;
             ++restored;
         }
@@ -763,7 +790,7 @@ bool isResistiveType(ComponentType type)
 {
     return type == ComponentType::Resistor || type == ComponentType::Switch ||
            type == ComponentType::Bulb || type == ComponentType::Fan ||
-           isProbeType(type);
+           type == ComponentType::PowerResistor || isProbeType(type);
 }
 
 double componentResistance(const Component& component)
@@ -771,7 +798,7 @@ double componentResistance(const Component& component)
     if (component.type == ComponentType::Switch) {
         return component.switchClosed ? 1e-3 : 1e12;
     }
-    if (isLoadType(component.type) && component.damaged) {
+    if (isBurnableType(component.type) && component.damaged) {
         return 1e12;
     }
     return component.value;
@@ -979,6 +1006,21 @@ int Circuit::addComponent(ComponentType type, int gridX, int gridY)
         }
         break;
     }
+    case ComponentType::Irl540N:
+        component.value = 0.0;
+        break;
+    case ComponentType::CeramicCap:
+        // A 100 nF decoupling cap: 10 mΩ ESR and about 2 nH of ESL.
+        component.value = 100e-9;
+        component.seriesR = 0.01;
+        component.seriesL = 2e-9;
+        break;
+    case ComponentType::PowerResistor:
+        // 1 Ω, 2 W wirewound.
+        component.value = 1.0;
+        component.seriesL = 1e-6;
+        component.ratedPower = 2.0;
+        break;
     case ComponentType::PwmSource:
         component.value = 5.0;
         component.source.mode = Waveform::Pulse;

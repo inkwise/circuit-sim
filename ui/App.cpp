@@ -1920,7 +1920,7 @@ void App::checkLoadDamage()
     const size_t index = liveSampleIndex();
     bool damagedAny = false;
     for (auto& component : circuit_.components) {
-        if (!isLoadType(component.type) || component.damaged) {
+        if (!isBurnableType(component.type) || component.damaged) {
             continue;
         }
         double voltage = 0.0;
@@ -1938,7 +1938,8 @@ void App::checkLoadDamage()
         const LoadFault fault = loadFault(component, voltage, current);
         if (fault != LoadFault::None) {
             component.damaged = true;
-            component.damagedByCurrent = fault == LoadFault::OverCurrent;
+            component.damagedByCurrent =
+                fault == LoadFault::OverCurrent || fault == LoadFault::OverPower;
             damagedAny = true;
         }
     }

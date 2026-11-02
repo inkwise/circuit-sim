@@ -34,6 +34,13 @@ const char* kPowerNmosModel =
 const char* kPowerPmosModel =
     ".model MPWR_P PMOS(LEVEL=1 VTO=-1.6 KP=5 RD=0.03 RS=0.03 IS=1E-12)";
 
+// IRL540N: logic-level N-channel MOSFET, 100 V / 28 A, Rds(on) 44 mΩ at
+// Vgs = 5 V. The LEVEL=1 model has no breakdown, capacitance or thermal data,
+// so the parameters are fitted to the on-resistance and the gate threshold:
+// Rds ~ 1 / (KP * (Vgs - VTO)) + RD + RS = 34 + 10 = 44 mΩ at 5 V.
+const char* kIrl540NModel =
+    ".model MIRL540N NMOS(LEVEL=1 VTO=1.8 KP=9.2 RD=0.005 RS=0.005 IS=1E-12)";
+
 // SS34-class Schottky freewheel diode: about 0.4 V at 1 A.
 const char* kSchottkyModel =
     ".model DSCH D(IS=1E-6 N=1.05 RS=0.02 CJO=200P BV=40 IBV=100U)";
@@ -127,6 +134,9 @@ std::string spiceModelCard(const std::string& modelName)
     }
     if (modelName == "DSCH") {
         return kSchottkyModel;
+    }
+    if (modelName == "MIRL540N") {
+        return kIrl540NModel;
     }
     return {};
 }

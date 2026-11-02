@@ -684,6 +684,18 @@ void App::drawComponent(ImDrawList* drawList, const Component& component, bool s
     std::vector<ImVec2> polyline;
     switch (component.type) {
     case ComponentType::Resistor:
+    case ComponentType::PowerResistor:
+        if (component.type == ComponentType::PowerResistor) {
+            // Cement / wirewound block: a boxed resistor instead of a zigzag.
+            drawList->AddLine(P(0, -2), P(0, -1.2f), body, t);
+            drawList->AddLine(P(0, 1.2f), P(0, 2), body, t);
+            drawList->AddRect(P(-0.6f, -1.2f), P(0.6f, 1.2f), body, dp(1.5f), 0, t);
+            drawList->AddLine(P(-0.35f, -0.6f), P(0.35f, -0.6f), detail,
+                              1.4f * uiScale_);
+            drawList->AddLine(P(-0.35f, 0.0f), P(0.35f, 0.0f), detail,
+                              1.4f * uiScale_);
+            break;
+        }
         polyline = {
             P(0, -2),     P(0, -1.2f), P(0.45f, -1.0f), P(-0.45f, -0.6f),
             P(0.45f, -0.2f), P(-0.45f, 0.2f), P(0.45f, 0.6f),
@@ -692,10 +704,16 @@ void App::drawComponent(ImDrawList* drawList, const Component& component, bool s
         drawList->AddPolyline(polyline.data(), static_cast<int>(polyline.size()), body, 0, t);
         break;
     case ComponentType::Capacitor:
+    case ComponentType::CeramicCap:
         drawList->AddLine(P(0, -2), P(0, -0.3f), body, t);
         drawList->AddLine(P(0, 0.3f), P(0, 2), body, t);
         drawList->AddLine(P(-0.95f, -0.3f), P(0.95f, -0.3f), body, t);
         drawList->AddLine(P(-0.95f, 0.3f), P(0.95f, 0.3f), body, t);
+        if (component.type == ComponentType::CeramicCap) {
+            // Ceramic chip: both plates straight, no polarity mark.
+            drawList->AddLine(P(-0.55f, 0.55f), P(0.55f, 0.55f), detail,
+                              1.4f * uiScale_);
+        }
         break;
     case ComponentType::Inductor: {
         drawList->AddLine(P(0, -2), P(0, -1.2f), body, t);
@@ -1051,6 +1069,7 @@ void App::drawComponent(ImDrawList* drawList, const Component& component, bool s
         drawList->AddPolyline(pulse, 10, detail, 0, 1.7f * uiScale_);
         break;
     }
+    case ComponentType::Irl540N:
     case ComponentType::PowerNmos:
     case ComponentType::PowerPmos: {
         drawList->AddLine(P(-2.0f, 0.0f), P(-0.85f, 0.0f), body, t);
@@ -1558,6 +1577,11 @@ void drawComponentGlyph(ImDrawList* drawList, ImVec2 center, float size,
     };
 
     switch (type) {
+    case ComponentType::PowerResistor:
+        line(-0.95f, 0.0f, -0.55f, 0.0f);
+        line(0.55f, 0.0f, 0.95f, 0.0f);
+        drawList->AddRect(P(-0.55f, -0.4f), P(0.55f, 0.4f), color, 0.0f, 0, thickness);
+        break;
     case ComponentType::Resistor: {
         const ImVec2 points[] = {
             P(-0.95f, 0.0f), P(-0.75f, 0.0f), P(-0.6f, -0.4f), P(-0.35f, 0.4f),
@@ -1569,10 +1593,15 @@ void drawComponentGlyph(ImDrawList* drawList, ImVec2 center, float size,
         break;
     }
     case ComponentType::Capacitor:
+    case ComponentType::CeramicCap:
         line(-0.95f, 0.0f, -0.18f, 0.0f);
         line(0.18f, 0.0f, 0.95f, 0.0f);
         line(-0.18f, -0.55f, -0.18f, 0.55f);
         line(0.18f, -0.55f, 0.18f, 0.55f);
+        if (type == ComponentType::CeramicCap) {
+            drawList->AddRect(P(-0.42f, -0.72f), P(0.42f, 0.72f), color, 0.0f, 0,
+                              thickness * 0.7f);
+        }
         break;
     case ComponentType::Inductor: {
         std::vector<ImVec2> points;
@@ -1690,6 +1719,7 @@ void drawComponentGlyph(ImDrawList* drawList, ImVec2 center, float size,
         }
         break;
     }
+    case ComponentType::Irl540N:
     case ComponentType::Nmos:
         line(-0.95f, 0.0f, -0.45f, 0.0f);
         line(-0.45f, -0.45f, -0.45f, 0.45f);

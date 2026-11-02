@@ -578,25 +578,45 @@ CompiledCircuit compileCircuit(const Circuit& circuit)
         const int nodeA = nodes.a();
         const int nodeB = nodes.b();
         switch (componentInfo(component.type).family) {
-        case SpiceFamily::Resistor:
-            netlist << spiceElementName(component) << ' ' << nodeA << ' ' << nodeB << ' '
-                    << formatNumber(componentResistance(component)) << '\n';
+        case SpiceFamily::Resistor: {
+            // A wirewound power resistor has a little inductance in series.
+            if (component.seriesL > 0.0 && !component.damaged) {
+                netlist << 'L' << component.name << ' ' << component.name << "X "
+                        << nodeB << ' ' << formatNumber(component.seriesL) << '\n';
+                netlist << spiceElementName(component) << ' ' << nodeA << ' '
+                        << component.name << "X "
+                        << formatNumber(componentResistance(component)) << '\n';
+            } else {
+                netlist << spiceElementName(component) << ' ' << nodeA << ' ' << nodeB
+                        << ' ' << formatNumber(componentResistance(component)) << '\n';
+            }
             break;
+        }
         case SpiceFamily::Capacitor:
         case SpiceFamily::Inductor: {
-            // Real filter parts carry a series resistance (ESR / winding
-            // resistance). It is emitted as a separate card on an internal
-            // node, because ngspice's L and C cards have no Rser parameter.
-            const bool series = component.seriesR > 0.0;
-            const std::string pairNode =
-                series ? component.name + "X" : std::string();
-            netlist << spiceElementName(component) << ' ' << nodeA << ' '
-                    << (series ? pairNode : std::to_string(nodeB)) << ' '
-                    << formatNumber(component.value) << '\n';
-            if (series) {
-                netlist << 'R' << component.name << ' ' << pairNode << ' '
-                        << nodeB << ' ' << formatNumber(component.seriesR) << '\n';
+            // Real parts carry series parasitics: the ESR / winding resistance
+            // (R) and the ESL / winding inductance (L). ngspice's C and L cards
+            // have no series parameters, so the parts are chained through
+            // internal nodes: C -> L -> R -> B.
+            const bool seriesR = component.seriesR > 0.0;
+            const bool seriesL = component.seriesL > 0.0;
+            // The chain runs C/L -> ... -> nodeB; keep the historical "X" node
+            // name for the single-parasitic case.
+            std::string tail = std::to_string(nodeB);
+            std::string xNode = component.name + "X";
+            std::string yNode = component.name + "Y";
+            if (seriesR) {
+                netlist << 'R' << component.name << ' ' << xNode << ' ' << nodeB << ' '
+                        << formatNumber(component.seriesR) << '\n';
+                tail = xNode;
             }
+            if (seriesL) {
+                netlist << 'L' << component.name << ' ' << yNode << ' ' << tail << ' '
+                        << formatNumber(component.seriesL) << '\n';
+                tail = yNode;
+            }
+            netlist << spiceElementName(component) << ' ' << nodeA << ' ' << tail
+                    << ' ' << formatNumber(component.value) << '\n';
             break;
         }
         case SpiceFamily::VoltageSource:
@@ -654,6 +674,8 @@ CompiledCircuit compileCircuit(const Circuit& circuit)
                 model = "MPWR_N";
             } else if (component.type == ComponentType::PowerPmos) {
                 model = "MPWR_P";
+            } else if (component.type == ComponentType::Irl540N) {
+                model = "MIRL540N";
             }
             netlist << ' ' << internalPinNode(component, 2) << ' ' << model << '\n';
             modelCards.insert(model);

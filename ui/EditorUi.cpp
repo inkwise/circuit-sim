@@ -951,7 +951,12 @@ void App::applyNumberField(int componentId, NumberField field, double value)
         setLoadRatedCurrent(*component, value);
         break;
     case NumberField::RatedPower:
-        setLoadRatedPower(*component, value);
+        if (component->type == ComponentType::PowerResistor) {
+            // A resistor's wattage is a limit; the resistance does not change.
+            component->ratedPower = std::max(0.001, value);
+        } else {
+            setLoadRatedPower(*component, value);
+        }
         break;
     case NumberField::HeatLoad:
         component->heatLoad = std::max(0.0, value);
@@ -1340,6 +1345,16 @@ void App::drawSelectionCard()
         case ComponentType::TerminalBlock:
             height = dp(96.0f);
             break;
+        case ComponentType::PowerResistor:
+            // Resistance row plus the power rating row and the live wattage.
+            height = dp(148.0f);
+            break;
+        case ComponentType::CeramicCap:
+            height = dp(150.0f);
+            break;
+        case ComponentType::Irl540N:
+            height = dp(144.0f);
+            break;
         case ComponentType::Tec12706:
         case ComponentType::Tec12710:
             // Spec line, temperature, electrical readout, the two model
@@ -1555,6 +1570,14 @@ void App::drawSelectionCard()
     } else if (component->type == ComponentType::ElectrolyticCap) {
         valueRow(contentY);
         seriesRow(contentY + dp(40.0f));
+    } else if (component->type == ComponentType::CeramicCap) {
+        valueRow(contentY);
+        seriesRow(contentY + dp(40.0f));
+        // The ESL is what makes a ceramic cap stop helping at high frequency.
+        ImGui::SetCursorPos(ImVec2(dp(2.0f), contentY + dp(80.0f)));
+        ImGui::Text("ESL %s", formatSI(component->seriesL, "H").c_str());
+        ImGui::SameLine(0.0f, dp(8.0f));
+        ImGui::TextDisabled("串联电感，高频时与容量串联谐振");
     } else if (component->type == ComponentType::Oscilloscope) {
         ImGui::SetCursorPos(ImVec2(dp(2.0f), contentY));
         ImGui::TextDisabled("探头输入 1 MΩ，与地构成差分测量");
@@ -1579,6 +1602,48 @@ void App::drawSelectionCard()
     } else if (component->type == ComponentType::TerminalBlock) {
         ImGui::SetCursorPos(ImVec2(dp(2.0f), contentY));
         ImGui::TextDisabled("两只螺丝互不相连，仅用来标记板级接口");
+    } else if (component->type == ComponentType::PowerResistor) {
+        valueRow(contentY);
+        const float ratedY = contentY + dp(40.0f);
+        ImGui::SetCursorPos(ImVec2(dp(2.0f), ratedY));
+        ImGui::TextDisabled("额定功率");
+        ImGui::SameLine(0.0f, dp(6.0f));
+        NumberFieldInfo powerInfo;
+        if (numberFieldInfo(component, NumberField::RatedPower, &powerInfo)) {
+            drawValueChip("##ratedpower_chip", component->id, NumberField::RatedPower,
+                          formatSI(loadRatedPower(*component), "W"),
+                          ImVec2(dp(84.0f), chipHeight));
+        }
+        ImGui::SameLine(0.0f, dp(10.0f));
+        double voltage = 0.0;
+        double current = 0.0;
+        if (live_ && voltageAcross(*component, liveSampleIndex(), &voltage) &&
+            currentFor(*component, liveSampleIndex(), &current)) {
+            const double watts = std::fabs(voltage * current);
+            ImGui::Text("实耗 %s", formatSI(watts, "W").c_str());
+            ImGui::SameLine(0.0f, dp(8.0f));
+            if (component->damaged) {
+                ImGui::TextColored(Theme::toVec4(Theme::danger()), "已烧毁（开路）");
+            } else if (watts > loadRatedPower(*component) * 0.9) {
+                ImGui::TextColored(Theme::toVec4(Theme::warning()), "接近额定");
+            } else {
+                ImGui::TextDisabled("安全");
+            }
+        } else {
+            ImGui::TextDisabled("启动仿真后显示实际功耗");
+        }
+        if (component->damaged) {
+            ImGui::SetCursorPos(ImVec2(dp(2.0f), ratedY + dp(34.0f)));
+            if (accentButton("修复", ImVec2(dp(66.0f), dp(32.0f)))) {
+                pushUndo();
+                component->damaged = false;
+                component->damagedByCurrent = false;
+                circuit_.touch();
+                markChanged();
+            }
+        }
+        ImGui::SetCursorPos(ImVec2(dp(2.0f), ratedY + dp(34.0f)));
+        ImGui::TextDisabled("超过额定功率会烧断开路，点“修复”可恢复");
     } else if (isThermoelectricType(component->type)) {
         // Peltier cooler: a fixed datasheet module, so the card shows what the
         // simulation makes of it - cold face temperature, cooling power and

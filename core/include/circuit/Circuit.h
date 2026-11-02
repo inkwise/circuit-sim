@@ -57,6 +57,11 @@ enum class ComponentType {
     // cold, with a lumped thermal model of that cold face.
     Tec12706,        // TEC1-12706, 12 V / 6 A, Qmax 57 W
     Tec12710,        // TEC1-12710, 12 V / 10.5 A, Qmax 92 W
+    // The parts a real board uses: a known logic-level MOSFET, a ceramic
+    // (MLCC) capacitor with its ESL, and a power resistor with a power rating.
+    Irl540N,         // IRL540N: 100 V / 28 A / 44 mΩ logic-level N-MOSFET
+    CeramicCap,      // MLCC: C + ESR + ESL (series RLC, what decoupling is)
+    PowerResistor,   // wirewound / cement resistor: R + winding L + power rating
 };
 
 enum class Waveform {
@@ -110,6 +115,9 @@ struct Component {
     // Series resistance of a real part: winding resistance of a power inductor
     // (DCR) or the ESR of an electrolytic capacitor. 0 means ideal.
     double seriesR = 0.0;
+    // Series inductance of a real part: the ESL of a ceramic capacitor, or the
+    // winding inductance of a wirewound resistor. 0 means ideal.
+    double seriesL = 0.0;
     int gridX = 0;
     int gridY = 0;
     int rotation = 0;         // 0, 90, 180, 270
@@ -145,18 +153,23 @@ const char* waveformKey(Waveform waveform);
 bool waveformFromKey(const std::string& key, Waveform* out);
 
 bool isSourceType(ComponentType type);
-// True for the visual loads (bulb, fan).
+// True for the visual loads (bulb, fan, Peltier module).
 bool isLoadType(ComponentType type);
+// True for every part that can be destroyed by running it outside its ratings:
+// the visual loads plus a resistor with a power rating.
+bool isBurnableType(ComponentType type);
 // Fills the load ratings (start-up / maximum voltage / maximum current) with
 // realistic defaults when they are missing, e.g. for projects saved before the
 // ratings existed.
 void applyLoadDefaults(Component& component);
 
-// Why a load failed; None means it is operating inside its ratings.
+// Why a part failed; None means it is operating inside its ratings.
 enum class LoadFault {
     None,
     OverVoltage,
     OverCurrent,
+    // Only parts whose limit is a power rating (a wirewound / cement resistor).
+    OverPower,
 };
 
 // Fault a load would suffer at this terminal voltage and current.

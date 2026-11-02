@@ -2936,6 +2936,193 @@ void testComponentGeometryTable()
           "a legacy part keeps its two-cell pins");
 }
 
+
+// The IRL540N is a logic-level N-MOSFET: 5 V on the gate has to turn it on
+// (44 mΩ), 0 V has to turn it off.
+void testIrl540NSwitch()
+{
+    NgspiceEngine engine;
+    std::string error;
+    check(engine.initialize(error), "ngspice initializes for the IRL540N: " + error);
+
+    const auto build = [](double gateVolts) {
+        Circuit circuit;
+        const int supply = circuit.addComponent(ComponentType::VoltageSource, 4, 10);
+        if (Component* component = circuit.findComponent(supply)) {
+            component->source.mode = Waveform::DC;
+            component->source.dc = 12.0;
+            component->source.amplitude = 12.0;
+            component->value = 12.0;
+        }
+        const int load = circuit.addComponent(ComponentType::Resistor, 16, 6);
+        if (Component* component = circuit.findComponent(load)) {
+            component->value = 10.0;
+        }
+        const int gateSupply = circuit.addComponent(ComponentType::VoltageSource, 2, 20);
+        if (Component* component = circuit.findComponent(gateSupply)) {
+            component->source.mode = Waveform::DC;
+            component->source.dc = gateVolts;
+            component->source.amplitude = gateVolts;
+            component->value = gateVolts;
+        }
+        circuit.addComponent(ComponentType::Irl540N, 10, 10);
+        circuit.addComponent(ComponentType::Ground, 11, 16);
+
+        // 12 V rail up to the load, load down to the drain.
+        circuit.addWirePoints({Point{4, 9}, Point{4, 5}, Point{16, 5}});
+        circuit.addWirePoints({Point{16, 7}, Point{16, 9}, Point{11, 9}});
+        // Source and both supplies to ground.
+        circuit.addWirePoints({Point{11, 11}, Point{11, 15}});
+        circuit.addWirePoints({Point{4, 11}, Point{4, 15}, Point{11, 15}});
+        circuit.addWirePoints({Point{2, 21}, Point{3, 21}, Point{3, 15}, Point{4, 15}});
+        // Gate driven from the 5 V (or 0 V) source, over the top of the board.
+        circuit.addWirePoints({Point{2, 19}, Point{2, 8}, Point{9, 8}, Point{9, 10}});
+        return circuit;
+    };
+
+    const Circuit on = build(5.0);
+    const int mosfet = [&] {
+        for (const auto& component : on.components) {
+            if (component.type == ComponentType::Irl540N) {
+                return component.id;
+            }
+        }
+        return -1;
+    }();
+
+    const CompiledCircuit compiled = compileCircuit(on);
+    check(compiled.ok, "IRL540N netlist compiles: " + compiled.error);
+    if (!compiled.ok) {
+        std::printf("%s\n", compiled.netlist.c_str());
+    }
+    check(compiled.netlist.find(".model MIRL540N NMOS") != std::string::npos,
+          "the IRL540N model card is emitted");
+    check(compiled.netlist.find("M1 ") != std::string::npos,
+          "the MOSFET device line is emitted");
+
+    SimulationRequest request;
+    request.circuit = on;
+    request.kind = AnalysisKind::OperatingPoint;
+    SimulationResult result = engine.runAsync(std::move(request)).get();
+    check(result.ok, "IRL540N operating point runs: " + result.error);
+    const auto pinsFound = result.pinCurrent.find(mosfet);
+    if (pinsFound == result.pinCurrent.end() || pinsFound->second.size() != 3 ||
+        pinsFound->second[0].empty()) {
+        check(false, "IRL540N exposes drain/source currents");
+        return;
+    }
+    const double drain = pinsFound->second[0].front();
+    std::printf("IRL540N drain current at Vgs=5 V: %s\n", formatSI(drain, "A").c_str());
+    check(drain > 1.0 && drain < 1.25,
+          "the IRL540N conducts about 1.1 A through a 10 Ω load");
+    // On-resistance: the drain sits only a little above ground.
+    const CompiledCircuit onCompiled = compileCircuit(on);
+    const int drainNode = onCompiled.nodes.at(mosfet).pins[0];
+    const auto drainVolts = result.nodeVoltage.find(drainNode);
+    if (drainVolts != result.nodeVoltage.end() && !drainVolts->second.empty()) {
+        std::printf("IRL540N Vds = %s\n", formatSI(drainVolts->second.front(), "V").c_str());
+        check(drainVolts->second.front() < 0.15,
+              "the drain stays within 0.15 V of ground when on");
+        if (std::fabs(drain) > 1e-3) {
+            const double rds = drainVolts->second.front() / drain;
+            std::printf("IRL540N Rds(on) = %s\n", formatSI(rds, "Ω").c_str());
+            check(rds > 0.03 && rds < 0.06,
+                  "the on-resistance lands near the 44 mΩ datasheet value");
+        }
+    }
+
+    const Circuit offCircuit = build(0.0);
+    SimulationRequest offRequest;
+    offRequest.circuit = offCircuit;
+    offRequest.kind = AnalysisKind::OperatingPoint;
+    SimulationResult off = engine.runAsync(std::move(offRequest)).get();
+    check(off.ok, "the IRL540N with the gate at 0 V still solves");
+    const auto offPins = off.pinCurrent.find(mosfet);
+    if (offPins != off.pinCurrent.end() && !offPins->second.empty() &&
+        !offPins->second[0].empty()) {
+        std::printf("IRL540N drain current at Vgs=0 V: %s\n",
+                    formatSI(offPins->second[0].front(), "A").c_str());
+        check(std::fabs(offPins->second[0].front()) < 1e-4,
+              "the IRL540N is off with the gate at 0 V");
+    }
+}
+
+// Ceramic capacitor: C in series with its ESL and ESR. Power resistor: R in
+// series with a little winding inductance, burnt by too much power.
+void testRealisticParts()
+{
+    Circuit circuit;
+    const int cap = circuit.addComponent(ComponentType::CeramicCap, 10, 10);
+    const Component* ceramic = circuit.findComponent(cap);
+    check(ceramic != nullptr, "the ceramic capacitor exists");
+    if (ceramic) {
+        check(std::fabs(ceramic->value - 100e-9) < 1e-15, "it is a 100 nF part");
+        check(ceramic->seriesR > 0.0 && ceramic->seriesL > 0.0,
+              "it carries both an ESR and an ESL");
+    }
+    circuit.addComponent(ComponentType::VoltageSource, 4, 10);
+    circuit.addComponent(ComponentType::Ground, 4, 14);
+    circuit.addWirePoints({Point{4, 9}, Point{10, 9}});
+    circuit.addWirePoints({Point{10, 11}, Point{10, 13}, Point{4, 13}});
+    circuit.addWirePoints({Point{4, 11}, Point{4, 13}});
+
+    const CompiledCircuit compiled = compileCircuit(circuit);
+    check(compiled.ok, "the ceramic capacitor circuit compiles: " + compiled.error);
+    const std::string& netlist = compiled.netlist;
+    std::printf("ceramic cap cards:\n%s\n", netlist.c_str());
+    const bool hasCap = netlist.find("C1 ") != std::string::npos;
+    const bool hasSeriesL = netlist.find("LC1 ") != std::string::npos;
+    const bool hasSeriesR = netlist.find("RC1 ") != std::string::npos;
+    check(hasCap && hasSeriesL && hasSeriesR,
+          "the ceramic capacitor is emitted as C + L + R in series");
+
+    // 100 nF with a 2 nH ESL self-resonates around 11 MHz, which is exactly the
+    // frequency where a ceramic cap stops being a capacitor.
+    const double f0 = 1.0 / (2.0 * 3.14159265358979 * std::sqrt(100e-9 * 2e-9));
+    std::printf("100 nF + 2 nH self-resonance: %s\n", formatSI(f0, "Hz").c_str());
+    check(f0 > 8e6 && f0 < 15e6, "the self-resonance lands where an MLCC sits");
+
+    // Power resistor: a 2 W part at 1 Ω, burnt by 5 V across it (25 W).
+    Circuit power;
+    const int resistor = power.addComponent(ComponentType::PowerResistor, 10, 10);
+    Component* part = power.findComponent(resistor);
+    check(part != nullptr, "the power resistor exists");
+    if (!part) {
+        return;
+    }
+    check(std::fabs(part->ratedPower - 2.0) < 1e-9, "it is a 2 W part");
+    check(std::fabs(part->value - 1.0) < 1e-9, "with 1 Ω");
+    check(loadFault(*part, 1.0, 1.0) == LoadFault::None, "1 W is inside the rating");
+    check(loadFault(*part, 4.0, 4.0) == LoadFault::OverPower,
+          "16 W burns a 2 W resistor");
+    part->ratedPower = 40.0;
+    check(loadFault(*part, 4.0, 4.0) == LoadFault::None,
+          "a bigger resistor survives the same power");
+    part->damaged = true;
+    check(componentResistance(*part) > 1e9, "a burnt resistor is an open circuit");
+    part->damaged = false;
+    part->seriesL = 1e-6;
+    part->ratedPower = 2.0;
+
+    power.addComponent(ComponentType::VoltageSource, 4, 10);
+    power.addComponent(ComponentType::Ground, 4, 14);
+    power.addWirePoints({Point{4, 9}, Point{10, 9}});
+    power.addWirePoints({Point{10, 11}, Point{10, 13}, Point{4, 13}});
+    power.addWirePoints({Point{4, 11}, Point{4, 13}});
+    const CompiledCircuit powerCompiled = compileCircuit(power);
+    check(powerCompiled.ok, "the power resistor circuit compiles: " + powerCompiled.error);
+    std::printf("power resistor cards:\n%s\n", powerCompiled.netlist.c_str());
+    check(powerCompiled.netlist.find("LR1 ") != std::string::npos,
+          "the wirewound resistor is emitted with its winding inductance");
+
+    // Damage is recoverable, like the other burnable parts.
+    Circuit damaged;
+    const int burnt = damaged.addComponent(ComponentType::PowerResistor, 0, 0);
+    damaged.findComponent(burnt)->damaged = true;
+    check(clearLoadDamage(damaged) == 1, "a burnt resistor can be repaired");
+    check(!damaged.findComponent(burnt)->damaged, "and it is no longer damaged");
+}
+
 }  // namespace
 
 int main()
@@ -2984,6 +3171,8 @@ int main()
     testLegacyGeometryShrink();
     testLegacyProjectFileShrinks();
     testComponentGeometryTable();
+    testIrl540NSwitch();
+    testRealisticParts();
 
     if (g_failures == 0) {
         std::printf("ALL TESTS PASSED\n");

@@ -414,6 +414,13 @@ std::string componentValueLabel(const Component& component)
     switch (component.type) {
     case ComponentType::Resistor:
         return formatSI(component.value, "Ω");
+    case ComponentType::PowerResistor:
+        if (component.damaged) {
+            return "烧毁";
+        }
+        return formatSI(component.value, "Ω");
+    case ComponentType::Irl540N:
+        return "IRL540N";
     case ComponentType::Bulb:
     case ComponentType::Fan:
         if (component.damaged) {
@@ -422,6 +429,7 @@ std::string componentValueLabel(const Component& component)
         return formatSI(component.ratedVoltage, "V") + " / " +
                formatSI(loadRatedCurrent(component), "A");
     case ComponentType::Capacitor:
+    case ComponentType::CeramicCap:
         return formatSI(component.value, "F");
     case ComponentType::Inductor:
         return formatSI(component.value, "H");

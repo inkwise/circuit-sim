@@ -88,7 +88,8 @@ bool writeProject(const Circuit& circuit, const std::string& path, const std::st
                << component.heatLoad << ' '
                << component.coldStart << ' '
                << (component.legacySymbol ? 1 : 0) << ' '
-               << (component.mirrored ? 1 : 0) << '\n';
+               << (component.mirrored ? 1 : 0) << ' '
+               << component.seriesL << '\n';
     }
     for (const auto& wire : circuit.wires) {
         output << "WIRE " << wire.id << ' ' << wire.points.size();
@@ -318,6 +319,10 @@ bool loadProject(const std::string& path, Circuit* circuit, std::string* name,
                     int mirrored = 0;
                     if (stream >> mirrored) {
                         component.mirrored = mirrored != 0;
+                        double seriesL = 0.0;
+                        if (stream >> seriesL && seriesL >= 0.0) {
+                            component.seriesL = seriesL;
+                        }
                     }
                 }
             }
