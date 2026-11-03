@@ -190,6 +190,11 @@ private:
     // In wire mode a click only lands on a connection point (a component pin
     // or an existing wire joint); blank canvas is not a target.
     bool hoveredConnectionTarget(ImVec2 screen, Point* point) const;
+    // Only component pins (a wire has to start on a part).
+    bool hoveredPinTarget(ImVec2 screen, Point* point) const;
+    // Where a wire would end: a pin / joint when one is under the finger, the
+    // snapped grid point otherwise.
+    Point wireEndPoint(ImVec2 screen) const;
     // Cached auto-route for the wire preview, so previewing does not re-run the
     // router every frame.
     const std::vector<Point>& previewRoute(Point start, Point end);

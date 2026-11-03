@@ -234,6 +234,30 @@ bool nearestConnectionPoint(const Circuit& circuit, Point point, int radius, Poi
     return found;
 }
 
+bool nearestPinPoint(const Circuit& circuit, Point point, int radius, Point* out)
+{
+    if (!out) {
+        return false;
+    }
+    bool found = false;
+    int bestDistance = radius + 1;
+    for (const auto& component : circuit.components) {
+        Point pins[kMaxComponentPins];
+        const int count = componentPins(component, pins);
+        for (int index = 0; index < count; ++index) {
+            const int dx = pins[index].x - point.x;
+            const int dy = pins[index].y - point.y;
+            const int distance = std::max(std::abs(dx), std::abs(dy));
+            if (distance <= radius && distance < bestDistance) {
+                bestDistance = distance;
+                *out = pins[index];
+                found = true;
+            }
+        }
+    }
+    return found;
+}
+
 std::vector<Point> lShapedRoute(Point start, Point end)
 {
     std::vector<Point> route;

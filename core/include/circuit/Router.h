@@ -14,6 +14,8 @@ std::vector<Point> connectionPoints(const Circuit& circuit);
 bool isConnectionPoint(const Circuit& circuit, Point point);
 // The connection point nearest to `point` inside `radius` grid cells.
 bool nearestConnectionPoint(const Circuit& circuit, Point point, int radius, Point* out);
+// Same, but only component pins: a wire may only *start* on a part.
+bool nearestPinPoint(const Circuit& circuit, Point point, int radius, Point* out);
 
 // Routes an orthogonal wire from `start` to `end`.
 //

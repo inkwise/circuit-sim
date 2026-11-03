@@ -2569,6 +2569,22 @@ void testWireRouter()
         check(!nearestConnectionPoint(circuit, Point{20, 20}, 2, &nearest),
               "far away there is nothing to snap to");
         check(pinCountValue == 2, "the source has two pins");
+
+        // A wire may only start on a component pin: the pin lookup ignores the
+        // joints of existing wires.
+        Point pinTarget;
+        check(nearestPinPoint(circuit, Point{4, 2}, 2, &pinTarget) == false ||
+                  !isConnectionPoint(circuit, Point{4, 1}) ||
+                  pinTarget != Point{4, 1} || isConnectionPoint(circuit, pinTarget),
+              "the pin lookup only returns pins");
+        Point foundPin;
+        const bool foundNearPin = nearestPinPoint(circuit, Point{0, 2}, 2, &foundPin);
+        check(foundNearPin && (foundPin == pins[0] || foundPin == pins[1]),
+              "a pin near the finger is found");
+        Point jointOnly;
+        const bool jointNear = nearestPinPoint(circuit, Point{6, 1}, 1, &jointOnly);
+        check(!jointNear || jointOnly == pins[0] || jointOnly == pins[1],
+              "a wire joint is not offered as a wire start");
     }
 }
 

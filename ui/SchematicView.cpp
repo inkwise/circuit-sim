@@ -302,6 +302,31 @@ bool App::hoveredConnectionTarget(ImVec2 screen, Point* point) const
     return nearestConnectionPoint(circuit_, snapScreen(screen), radius, point);
 }
 
+bool App::hoveredPinTarget(ImVec2 screen, Point* point) const
+{
+    if (!point) {
+        return false;
+    }
+    const float grid = gridPixels();
+    if (!(grid > 0.0f)) {
+        return false;
+    }
+    const int radius =
+        std::clamp(static_cast<int>(std::lround(26.0f * uiScale_ / grid)), 1, 3);
+    return nearestPinPoint(circuit_, snapScreen(screen), radius, point);
+}
+
+Point App::wireEndPoint(ImVec2 screen) const
+{
+    // A wire may end on a pin, on an existing joint, or in blank space (so a
+    // stub or a rail can be drawn where it is needed).
+    Point target;
+    if (hoveredConnectionTarget(screen, &target)) {
+        return target;
+    }
+    return snapScreen(screen);
+}
+
 const std::vector<Point>& App::previewRoute(Point start, Point end)
 {
     if (wirePreviewStart_ == start && wirePreviewEnd_ == end &&
@@ -1336,19 +1361,20 @@ void App::handleCanvasTap(const ImVec2& mouse)
     }
 
     if (tool_ == Tool::Wire) {
-        Point target;
-        if (!hoveredConnectionTarget(mouse, &target)) {
-            // Blank canvas is deliberately not a target: a wire only ever
-            // starts and ends on a pin or an existing joint.
-            setStatus("导线只能接在元件引脚或导线接头上，请点击高亮的接点");
-            return;
-        }
         if (!wireStarted_) {
-            wireStart_ = target;
+            // A wire always starts on a component pin; the end may be a pin, an
+            // existing joint, or blank canvas (a stub / rail).
+            Point pin;
+            if (!hoveredPinTarget(mouse, &pin)) {
+                setStatus("导线要从元件引脚开始，请点高亮的引脚");
+                return;
+            }
+            wireStart_ = pin;
             wireStarted_ = true;
-            setStatus("点击第二个接点，自动布线");
+            setStatus("点第二个引脚、接头或空白处完成导线（自动布线）");
             return;
         }
+        const Point target = wireEndPoint(mouse);
         if (target == wireStart_) {
             wireStarted_ = false;
             setStatus("已取消导线");
@@ -1511,8 +1537,8 @@ void App::drawCanvas(float height)
         drawGhost(drawList, mouse);
     }
     if (tool_ == Tool::Wire) {
-        // Every legal endpoint gets a ring, so "where may this wire go" is
-        // obvious and the blank canvas is clearly not a target.
+        // Every joint gets a ring, so a wire end can snap to a pin or to an
+        // existing joint; blank canvas is a legal end too, just not snapped.
         Point hoveredTarget;
         const bool hasHover = hovered && hoveredConnectionTarget(mouse, &hoveredTarget);
         const std::vector<Point> targets = connectionPoints(circuit_);
@@ -1532,14 +1558,16 @@ void App::drawCanvas(float height)
             }
         }
         if (wireStarted_) {
-            // Preview the route the tap would create.
-            if (hasHover && hoveredTarget != wireStart_) {
-                const std::vector<Point>& path = previewRoute(wireStart_, hoveredTarget);
+            // Preview the route the tap would create; the end follows the finger
+            // even over blank canvas.
+            const Point end = hovered ? wireEndPoint(mouse) : wireStart_;
+            if (hovered && end != wireStart_) {
+                const std::vector<Point>& path = previewRoute(wireStart_, end);
                 for (size_t i = 0; i + 1 < path.size(); ++i) {
                     drawList->AddLine(worldToScreen(path[i]), worldToScreen(path[i + 1]),
                                       Theme::accent(), 2.6f * uiScale_);
                 }
-                drawList->AddCircle(worldToScreen(hoveredTarget), 7.0f * uiScale_,
+                drawList->AddCircle(worldToScreen(end), 7.0f * uiScale_,
                                     Theme::accent(), 0, 2.0f * uiScale_);
             }
             drawList->AddCircleFilled(worldToScreen(wireStart_), 5.0f * uiScale_,
@@ -1551,8 +1579,8 @@ void App::drawCanvas(float height)
     if (placement_.active) {
         hint = "点击放置 · 拖动平移";
     } else if (tool_ == Tool::Wire) {
-        hint = wireStarted_ ? "点击第二个高亮接点 · 自动布线"
-                            : "点引脚 / 接头开始导线 · 空白处不画线";
+        hint = wireStarted_ ? "点引脚 / 接头 / 空白处结束 · 自动布线"
+                            : "点元件引脚开始导线";
     } else if (canvasSize_.x > dp(260.0f)) {
         hint = "拖动空白平移 · 双指缩放";
     }

@@ -93,7 +93,7 @@ std::string projectTimestamp(long long seconds)
 // Name of the example project the app ships with, and the marker that keeps it
 // from being re-created after the user deletes it.
 // Shown in the settings panel so a stale APK on the phone is easy to spot.
-const char* kAppVersion = "0.2.2";
+const char* kAppVersion = "0.2.3";
 const char* kMosExampleName = "MOS 开关板示例";
 const char* kTecExampleName = "制冷片示例 TEC1-12706";
 const char* kExampleHint =
