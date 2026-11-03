@@ -14,8 +14,11 @@ bool loadCircuit(const std::string& path, Circuit* circuit, std::string* error =
 // Project files add a "NAME <title>" header line and persist switch states.
 bool saveProject(const Circuit& circuit, const std::string& path, const std::string& name,
                  std::string* error = nullptr);
+// A damaged record (a corrupt wire or component line) no longer makes the whole
+// project unopenable: the bad record is skipped, the rest loads, and `warning`
+// says how many were dropped.
 bool loadProject(const std::string& path, Circuit* circuit, std::string* name,
-                 std::string* error = nullptr);
+                 std::string* error = nullptr, std::string* warning = nullptr);
 
 struct ProjectInfo {
     std::string path;

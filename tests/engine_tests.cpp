@@ -1954,7 +1954,7 @@ void testWireCrossings()
     {
         const Circuit circuit = makeMosSwitchBoardDemo();
         const std::vector<WireCrossing> crossings = findWireCrossings(circuit);
-        check(crossings.size() == 4, "the example uses four jumper crossings");
+        check(crossings.size() == 5, "the example draws its jumper crossings");
         bool laterAlwaysHops = true;
         for (const WireCrossing& crossing : crossings) {
             if (crossing.hoppingWireIndex <= crossing.straightWireIndex) {
@@ -3123,6 +3123,80 @@ void testRealisticParts()
     check(!damaged.findComponent(burnt)->damaged, "and it is no longer damaged");
 }
 
+
+// A damaged record must never make the whole project unopenable: long wires are
+// legal (the router can produce many corners) and a corrupt line is skipped with
+// a warning, leaving the rest of the circuit intact.
+void testProjectFileTolerance()
+{
+    const std::string directory = "./circuitlab_tolerance_projects";
+    std::string error;
+    check(ensureProjectDirectory(directory, &error), "tolerance project dir");
+
+    Circuit circuit;
+    circuit.addComponent(ComponentType::VoltageSource, 4, 20);
+    circuit.addComponent(ComponentType::Resistor, 30, 4);
+    circuit.addComponent(ComponentType::Ground, 30, 20);
+    // A long, saw-toothed wire: far more corners than the old 64-point limit.
+    std::vector<Point> zigzag;
+    zigzag.push_back(Point{4, 19});
+    for (int i = 0; i < 120; ++i) {
+        zigzag.push_back(Point{6 + i, (i % 2 == 0) ? 0 : 2});
+    }
+    zigzag.push_back(Point{28, 3});
+    zigzag.push_back(Point{30, 3});   // ends on the resistor's top pin
+    const int longWire = circuit.addWirePoints(zigzag);
+    check(longWire > 0, "a long wire can be created");
+    circuit.addWirePoints({Point{30, 5}, Point{32, 5}, Point{32, 19}, Point{30, 19}});
+    circuit.addWirePoints({Point{4, 21}, Point{4, 26}, Point{32, 26}, Point{32, 19}});
+    size_t savedPoints = 0;
+    for (const auto& wire : circuit.wires) {
+        savedPoints = std::max(savedPoints, wire.points.size());
+    }
+    std::printf("longest wire before save: %zu points\n", savedPoints);
+    check(savedPoints > 64, "the fixture really is longer than the old limit");
+
+    const std::string path = directory + "/long.ckt";
+    check(saveProject(circuit, path, "长导线", &error), "long wire project saves");
+    Circuit loaded;
+    std::string name;
+    std::string warning;
+    check(loadProject(path, &loaded, &name, &error, &warning),
+          "a project with a long wire loads: " + error);
+    check(warning.empty(), "no warning for a healthy file");
+    size_t reloadedPoints = 0;
+    for (const auto& wire : loaded.wires) {
+        reloadedPoints = std::max(reloadedPoints, wire.points.size());
+    }
+    std::printf("longest wire after reload: %zu points\n", reloadedPoints);
+    check(reloadedPoints == savedPoints, "every corner of the long wire is kept");
+    check(compileCircuit(loaded).ok, "the reloaded circuit compiles");
+
+    // Now damage the file: corrupt wire records next to the healthy ones.
+    {
+        std::ifstream input(path, std::ios::binary);
+        std::stringstream buffer;
+        buffer << input.rdbuf();
+        input.close();
+        std::string text = buffer.str();
+        text += "WIRE 99 1 5 5\n";       // count < 2: invalid
+        text += "WIRE 100 2 5 5 zzz\n";  // non-numeric coordinate
+        std::ofstream output(path, std::ios::binary | std::ios::trunc);
+        output << text;
+    }
+    Circuit salvaged;
+    warning.clear();
+    check(loadProject(path, &salvaged, &name, &error, &warning),
+          "a project with corrupt wire records still opens: " + error);
+    check(!warning.empty(), "the loader explains that records were skipped");
+    std::printf("warning: %s\n", warning.c_str());
+    check(salvaged.wires.size() == circuit.wires.size(), "the healthy wires are kept");
+    check(salvaged.components.size() == circuit.components.size(),
+          "the components are kept");
+    const CompiledCircuit compiled = compileCircuit(salvaged);
+    check(compiled.ok, "the salvaged project still compiles: " + compiled.error);
+}
+
 }  // namespace
 
 int main()
@@ -3173,6 +3247,7 @@ int main()
     testComponentGeometryTable();
     testIrl540NSwitch();
     testRealisticParts();
+    testProjectFileTolerance();
 
     if (g_failures == 0) {
         std::printf("ALL TESTS PASSED\n");

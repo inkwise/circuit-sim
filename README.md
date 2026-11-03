@@ -68,10 +68,10 @@ bash scripts/build-apk.sh
 APK 输出：
 
 ```
-dist/CircuitLab-0.2.0-debug.apk
+dist/CircuitLab-0.2.1-debug.apk
 ```
 
-装完可以到 **顶部菜单 → 设置** 最下面确认：`版本 0.2.0 · 构建 <编译时间>`，
+装完可以到 **顶部菜单 → 设置** 最下面确认：`版本 0.2.1 · 构建 <编译时间>`，
 以及 `元件库 35 种（晶体管 6 种）`。这两个数字对不上就说明手机上还是旧包。
 
 ## 安装
@@ -80,7 +80,7 @@ dist/CircuitLab-0.2.0-debug.apk
 bash scripts/install-apk.sh
 # 等价于：
 termux-open --content-type application/vnd.android.package-archive \
-  dist/CircuitLab-0.2.0-debug.apk
+  dist/CircuitLab-0.2.1-debug.apk
 ```
 
 设备需要允许“安装未知应用”。
@@ -102,6 +102,9 @@ termux-open --content-type application/vnd.android.package-archive \
   创建后立即自动仿真并打开最有用的结果页；“MOS 板”就是下面那套 12 V PWM 开关 +
   LC 滤波 + 示波器的整板电路。
 - 工程的名称、电路和开关状态都保存在应用的内部存储中，编辑时自动保存。
+- **文件损坏也能打开**：某条元件/导线记录坏掉（例如保存时被系统杀掉）时，
+  只会跳过那一条并在顶部提示“工程里有 N 条记录已损坏，已跳过”，其余电路照常载入；
+  长导线（自动布线的多拐角折线）也不再被判为无效。
 - 删除工程有二次确认。
 
 ### 绘制页

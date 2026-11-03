@@ -37,7 +37,9 @@ uint64_t packEdge(int x, int y, bool horizontal)
 
 struct Costs {
     static constexpr int kStep = 16;      // one grid cell
-    static constexpr int kTurn = 12;      // changing direction
+    // A corner costs about two cells of detour: straight wires read better and
+    // keep the saved project small (a staircase would be dozens of points).
+    static constexpr int kTurn = 34;
     static constexpr int kCrossWire = 90; // bridging an unrelated wire
     static constexpr int kBody = 34;      // running through a component body
 };

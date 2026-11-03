@@ -93,7 +93,7 @@ std::string projectTimestamp(long long seconds)
 // Name of the example project the app ships with, and the marker that keeps it
 // from being re-created after the user deletes it.
 // Shown in the settings panel so a stale APK on the phone is easy to spot.
-const char* kAppVersion = "0.2.0";
+const char* kAppVersion = "0.2.1";
 const char* kMosExampleName = "MOS 开关板示例";
 const char* kTecExampleName = "制冷片示例 TEC1-12706";
 const char* kExampleHint =
@@ -412,7 +412,8 @@ bool App::openProject(const std::string& path)
     Circuit loaded;
     std::string name;
     std::string error;
-    if (!loadProject(path, &loaded, &name, &error)) {
+    std::string warning;
+    if (!loadProject(path, &loaded, &name, &error, &warning)) {
         toast_ = error;
         toastAt_ = SDL_GetTicks();
         return false;
@@ -437,7 +438,11 @@ bool App::openProject(const std::string& path)
             break;
         }
     }
-    if (keptLarge) {
+    if (!warning.empty()) {
+        // Damaged records are skipped so the project still opens; say so.
+        toast_ = warning;
+        toastAt_ = SDL_GetTicks();
+    } else if (keptLarge) {
         toast_ = "旧工程保持原尺寸（自动缩小会改变接线），新建工程即可用缩小版元件";
         toastAt_ = SDL_GetTicks();
     }

@@ -174,9 +174,19 @@ bool saveProject(const Circuit& circuit, const std::string& path, const std::str
     return writeProject(circuit, path, name, error);
 }
 
+namespace {
+// Upper bound for a wire's corner list. The router can produce a fair number of
+// corners in a dense layout, and a damaged file must not be able to make us
+// allocate an absurd vector.
+constexpr size_t kMaxWirePoints = 4096;
+}  // namespace
+
 bool loadProject(const std::string& path, Circuit* circuit, std::string* name,
-                 std::string* error)
+                 std::string* error, std::string* warning)
 {
+    if (warning) {
+        warning->clear();
+    }
     if (!circuit) {
         if (error) {
             *error = "内部错误：电路指针为空。";
@@ -212,6 +222,7 @@ bool loadProject(const std::string& path, Circuit* circuit, std::string* name,
     std::string line;
     int maxComponentId = 0;
     int maxWireId = 0;
+    int skippedRecords = 0;
     while (std::getline(input, line)) {
         if (!line.empty() && line.back() == '\r') {
             line.pop_back();
@@ -239,10 +250,9 @@ bool loadProject(const std::string& path, Circuit* circuit, std::string* name,
                 component.source.frequency >> component.source.rise >>
                 component.source.pulseWidth >> component.source.period;
             if (!stream || !componentTypeFromKey(typeKey, &component.type)) {
-                if (error) {
-                    *error = "工程文件中的元件记录无效。";
-                }
-                return false;
+                // A damaged line must not cost the user the whole project.
+                ++skippedRecords;
+                continue;
             }
             int closed = 1;
             if (stream >> closed) {
@@ -342,22 +352,23 @@ bool loadProject(const std::string& path, Circuit* circuit, std::string* name,
             Wire wire;
             size_t count = 0;
             stream >> wire.id >> count;
-            if (!stream || count < 2 || count > 64) {
-                if (error) {
-                    *error = "工程文件中的导线记录无效。";
-                }
-                return false;
+            if (!stream || count < 2 || count > kMaxWirePoints) {
+                ++skippedRecords;
+                continue;
             }
+            bool complete = true;
             for (size_t i = 0; i < count; ++i) {
                 Point point;
                 stream >> point.x >> point.y;
                 if (!stream) {
-                    if (error) {
-                        *error = "工程文件中的导线坐标无效。";
-                    }
-                    return false;
+                    complete = false;
+                    break;
                 }
                 wire.points.push_back(point);
+            }
+            if (!complete || wire.points.size() < 2) {
+                ++skippedRecords;
+                continue;
             }
             maxWireId = std::max(maxWireId, wire.id);
             loaded.wires.push_back(std::move(wire));
@@ -381,6 +392,12 @@ bool loadProject(const std::string& path, Circuit* circuit, std::string* name,
     *circuit = std::move(loaded);
     if (name) {
         *name = loadedName;
+    }
+    if (warning) {
+        if (skippedRecords > 0) {
+            *warning = "工程里有 " + std::to_string(skippedRecords) +
+                       " 条记录已损坏，已跳过；建议检查一下电路。";
+        }
     }
     if (error) {
         error->clear();
