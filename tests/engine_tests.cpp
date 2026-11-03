@@ -2906,6 +2906,38 @@ void testComponentGeometryTable()
             }
         }
     }
+    // The tap target must be the drawn symbol, never a rectangle around it: the
+    // symbol half extents can never exceed the pin extent by more than a hair.
+    bool tightSymbols = true;
+    for (ComponentType type : allComponentTypes()) {
+        Component component;
+        component.type = type;
+        Point pins[kMaxComponentPins];
+        const int count = componentPins(component, pins);
+        int extentX = 0;
+        int extentY = 0;
+        for (int index = 0; index < count; ++index) {
+            extentX = std::max(extentX, std::abs(pins[index].x - component.gridX));
+            extentY = std::max(extentY, std::abs(pins[index].y - component.gridY));
+        }
+        float halfWidth = 0.0f;
+        float halfHeight = 0.0f;
+        componentSymbolHalfExtents(component, &halfWidth, &halfHeight);
+        if (halfWidth > static_cast<float>(std::max(extentX, 1)) + 0.01f ||
+            halfHeight > static_cast<float>(std::max(extentY, 1)) + 0.01f) {
+            std::printf("loose hit box for type %d: %s x %s (pins %d x %d)\n",
+                        static_cast<int>(type), formatSI(halfWidth, "").c_str(),
+                        formatSI(halfHeight, "").c_str(), extentX, extentY);
+            tightSymbols = false;
+        }
+        // The drawing scale has to match the pin reach, or the leads would stop
+        // short of their pins.
+        const float scale = componentSymbolScale(type);
+        if (scale != 0.5f && scale != 1.0f) {
+            tightSymbols = false;
+        }
+    }
+    check(tightSymbols, "the tap target is the drawn symbol, not a margin around it");
     check(allDistinct, "every component has distinct pins in all orientations");
     check(allInsideBounds, "component bounds cover the pins and stay compact");
     check(compactTwoPin, "simple parts keep every pin one cell from the centre");

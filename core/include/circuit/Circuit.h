@@ -144,6 +144,17 @@ int componentPins(const Component& component, Point out[kMaxComponentPins]);
 // the legacy (twice as large) size taken into account.
 void componentBodyHalfExtents(const Component& component, int* halfWidth, int* halfHeight);
 
+// How much the symbol drawing is scaled: simple parts whose pins sit one cell
+// from the centre are drawn at half size (their footprint is compact), while the
+// multi-pin chips keep full size because their leads are two cells long.
+float componentSymbolScale(ComponentType type);
+
+// Half extents of the symbol as it is DRAWN, in grid cells. Compact two- and
+// three-pin parts are drawn at half scale, so this is smaller than the footprint
+// above; it is what a tap has to hit.
+void componentSymbolHalfExtents(const Component& component, float* halfWidth,
+                                float* halfHeight);
+
 // Axis-aligned bounds in grid units, with a small margin for the symbol body.
 void componentBounds(const Component& component, Point* minOut, Point* maxOut);
 

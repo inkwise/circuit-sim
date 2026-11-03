@@ -515,6 +515,41 @@ void componentBodyHalfExtents(const Component& component, int* halfWidth, int* h
     *halfHeight = halfH;
 }
 
+float componentSymbolScale(ComponentType type)
+{
+    // The pins tell the story: a part whose pins are one cell from the centre is
+    // drawn at half size. Chips with two-cell leads (logic gates, op-amp, 7805,
+    // 555) keep the full-size symbol so the leads still reach their pins.
+    const PinLayout& layout = pinLayout(type);
+    int extent = 0;
+    for (int index = 0; index < layout.count; ++index) {
+        const PinDef& pin = layout.pins[static_cast<size_t>(index)];
+        extent = std::max({extent, std::abs(pin.x), std::abs(pin.y)});
+    }
+    return extent <= 1 ? 0.5f : 1.0f;
+}
+
+void componentSymbolHalfExtents(const Component& component, float* halfWidth,
+                                float* halfHeight)
+{
+    const PinLayout& layout = pinLayout(component.type);
+    // Old parts keep the full-size symbol and are twice as large.
+    float scale = componentSymbolScale(component.type);
+    if (component.legacySymbol) {
+        scale = 2.0f;
+    }
+    float halfW = static_cast<float>(layout.bodyHalfWidth) * scale;
+    float halfH = static_cast<float>(layout.bodyHalfHeight) * scale;
+    const bool horizontal =
+        (((component.rotation % 360) + 360) % 360) == 90 ||
+        (((component.rotation % 360) + 360) % 360) == 270;
+    if (horizontal) {
+        std::swap(halfW, halfH);
+    }
+    *halfWidth = halfW;
+    *halfHeight = halfH;
+}
+
 void componentBounds(const Component& component, Point* minOut, Point* maxOut)
 {
     int bodyHalfW = 0;

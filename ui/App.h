@@ -19,6 +19,15 @@
 
 namespace circuitlab {
 
+// Screen-space rectangle of the symbol that is actually drawn (see
+// App::symbolRect()). Kept at namespace scope so the hit-test helpers in
+// SchematicView.cpp can use it.
+struct SymbolRect {
+    ImVec2 min{0.0f, 0.0f};
+    ImVec2 max{0.0f, 0.0f};
+    bool valid = false;
+};
+
 class App {
 public:
     enum class Tool {
@@ -173,8 +182,11 @@ private:
     Point snapScreen(ImVec2 screen) const;
     float gridPixels() const;
     void fitView();
-    int hitComponent(ImVec2 screen) const;
-    int hitWire(ImVec2 screen) const;
+    // Screen rectangle of the drawn symbol (body at drawing scale plus pins).
+    SymbolRect symbolRect(const Component& component) const;
+    // What is under the finger: the symbol it lands on, or the nearest wire /
+    // symbol within a small grace. Never a "near enough" blank patch.
+    void hitSelection(ImVec2 screen, int* componentOut, int* wireOut) const;
     // In wire mode a click only lands on a connection point (a component pin
     // or an existing wire joint); blank canvas is not a target.
     bool hoveredConnectionTarget(ImVec2 screen, Point* point) const;

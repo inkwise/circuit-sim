@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ANDROID="$ROOT/android"
 APK="$ANDROID/app/build/outputs/apk/debug/app-debug.apk"
-VERSION="0.2.1"
+VERSION="0.2.2"
 
 if [[ ! -f "$ROOT/android/app/src/main/jniLibs/arm64-v8a/libngspice.so" ]]; then
     echo "ERROR: libngspice.so is missing; run scripts/build-ngspice-android.sh first" >&2
