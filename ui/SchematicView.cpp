@@ -168,32 +168,83 @@ void App::fitView()
 
 int App::hitComponent(ImVec2 screen) const
 {
-    const ImVec2 world = screenToWorld(screen);
-    for (auto it = circuit_.components.rbegin(); it != circuit_.components.rend(); ++it) {
-        Point boundsMin;
-        Point boundsMax;
-        componentBounds(*it, &boundsMin, &boundsMax);
-        if (world.x >= boundsMin.x - 0.6f && world.x <= boundsMax.x + 0.6f &&
-            world.y >= boundsMin.y - 0.6f && world.y <= boundsMax.y + 0.6f) {
-            return it->id;
+    // What you tap is what you get: the hit box is the drawn symbol (body plus
+    // pin ends) in *screen* space, never a grid-cell margin, so it does not
+    // grow when the canvas is zoomed in. A tap that lands inside two symbols
+    // picks the smaller one, and a tap between them picks the closer one.
+    const float padding = dp(6.0f);
+    int best = -1;
+    float bestArea = 0.0f;
+    bool bestStrict = false;
+    float bestDistance = 0.0f;
+
+    for (const auto& component : circuit_.components) {
+        int halfWidth = 0;
+        int halfHeight = 0;
+        componentBodyHalfExtents(component, &halfWidth, &halfHeight);
+        ImVec2 min = worldToScreen(
+            Point{component.gridX - halfWidth, component.gridY - halfHeight});
+        ImVec2 max = worldToScreen(
+            Point{component.gridX + halfWidth, component.gridY + halfHeight});
+        if (min.x > max.x) {
+            std::swap(min.x, max.x);
+        }
+        if (min.y > max.y) {
+            std::swap(min.y, max.y);
+        }
+        Point pins[kMaxComponentPins];
+        const int count = componentPins(component, pins);
+        for (int index = 0; index < count; ++index) {
+            const ImVec2 pin = worldToScreen(pins[index]);
+            min.x = std::min(min.x, pin.x);
+            min.y = std::min(min.y, pin.y);
+            max.x = std::max(max.x, pin.x);
+            max.y = std::max(max.y, pin.y);
+        }
+
+        const bool strict =
+            screen.x >= min.x && screen.x <= max.x && screen.y >= min.y && screen.y <= max.y;
+        const bool padded = screen.x >= min.x - padding && screen.x <= max.x + padding &&
+                            screen.y >= min.y - padding && screen.y <= max.y + padding;
+        if (!padded) {
+            continue;
+        }
+        const float area = (max.x - min.x) * (max.y - min.y);
+        const ImVec2 center((min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f);
+        const float distance = std::hypot(screen.x - center.x, screen.y - center.y);
+        const bool better =
+            best < 0 ||
+            // A direct hit beats a padded one, then the smaller symbol wins.
+            (strict && !bestStrict) ||
+            (strict == bestStrict && (strict ? area < bestArea : distance < bestDistance));
+        if (better) {
+            best = component.id;
+            bestArea = area;
+            bestDistance = distance;
+            bestStrict = strict;
         }
     }
-    return -1;
+    return best;
 }
 
 int App::hitWire(ImVec2 screen) const
 {
-    const float threshold = 16.0f * uiScale_;
-    for (auto it = circuit_.wires.rbegin(); it != circuit_.wires.rend(); ++it) {
-        for (size_t i = 0; i + 1 < it->points.size(); ++i) {
-            const ImVec2 a = worldToScreen(it->points[i]);
-            const ImVec2 b = worldToScreen(it->points[i + 1]);
-            if (pointSegmentDistance(screen, a, b) <= threshold) {
-                return it->id;
+    const float threshold = dp(12.0f);
+    int best = -1;
+    float bestDistance = threshold;
+    for (const auto& wire : circuit_.wires) {
+        for (size_t i = 0; i + 1 < wire.points.size(); ++i) {
+            const ImVec2 a = worldToScreen(wire.points[i]);
+            const ImVec2 b = worldToScreen(wire.points[i + 1]);
+            const float distance = pointSegmentDistance(screen, a, b);
+            // Nearest wire wins, not the last one added.
+            if (distance <= bestDistance) {
+                bestDistance = distance;
+                best = wire.id;
             }
         }
     }
-    return -1;
+    return best;
 }
 
 bool App::hoveredConnectionTarget(ImVec2 screen, Point* point) const
@@ -1278,17 +1329,8 @@ void App::handleCanvasTap(const ImVec2& mouse)
         return;
     }
 
-    if (tool_ == Tool::Select) {
-        const int component = hitComponent(mouse);
-        if (component >= 0) {
-            selectedComponent_ = component;
-            selectedWire_ = -1;
-        } else {
-            const int wire = hitWire(mouse);
-            selectedComponent_ = -1;
-            selectedWire_ = wire;
-        }
-    }
+    // Selection is decided on touch-down (see drawCanvas) so that a slightly
+    // drifting finger cannot select a different part on release.
 }
 
 void App::drawCanvas(float height)
@@ -1372,7 +1414,7 @@ void App::drawCanvas(float height)
     }
 
     if (!pinching_ && tool_ == Tool::Select && dragComponent_ >= 0 &&
-        ImGui::IsMouseDragging(0, 7.0f * uiScale_)) {
+        ImGui::IsMouseDragging(0, dp(14.0f))) {
         if (!dragUndoPushed_) {
             pushUndo();
             dragUndoPushed_ = true;
